@@ -268,11 +268,120 @@ def _parse_single(v: dict, group_prefix: str = "") -> dict | None:
 
 # ── Lecture download ──────────────────────────────────────────────────────────
 
+def _extract_stream_url(video_json: dict, hostname: str):
+    """Extract stream URL from raw lesson JSON without launching Chrome.
+
+    Returns a URL string (direct MP4) or list of M3U8 URL strings, or None.
+    Mirrors the from_json_mp4 / from_json_m3u8 logic in EchoCloudVideo.
+    """
+    # Method 1: direct S3 MP4 URL from primaryFiles
+    try:
+        primary = video_json["lesson"]["video"]["media"]["media"]["current"]["primaryFiles"]
+        urls = [obj["s3Url"] for obj in primary if obj.get("s3Url")]
+        if urls:
+            return next(reversed(urls))
+    except (KeyError, TypeError):
+        pass
+
+    # Method 2: M3U8 manifests
+    try:
+        if not (video_json["lesson"].get("hasVideo") and video_json["lesson"].get("hasAvailableVideo")):
+            return None
+        manifests = video_json["lesson"]["video"]["media"]["media"]["versions"][0]["manifests"]
+        m3u8urls = [m["uri"] for m in manifests if m.get("uri")]
+        if not m3u8urls:
+            return None
+        from urllib.parse import urlparse
+        netloc = urlparse(hostname).netloc
+        fixed = []
+        for u in m3u8urls:
+            p = urlparse(u)
+            fixed.append(f"{p.scheme}://content.{netloc}{p.path}")
+        return fixed
+    except (KeyError, TypeError, IndexError):
+        pass
+
+    return None
+
+
+def _build_session_from_cookies() -> "requests.Session":
+    """Build a requests.Session loaded with saved Echo360 cookies."""
+    import requests as req
+    session = req.Session()
+    if os.path.exists(_COOKIES_FILE):
+        with open(_COOKIES_FILE) as f:
+            cookies = json.load(f)
+        for c in cookies:
+            session.cookies.set(c["name"], c["value"])
+    return session
+
+
+def _download_audio_direct(session, stream_url, output_dir: str, filename: str) -> str | None:
+    """Download audio to opus without Chrome. Returns opus path or None on failure."""
+    from echo360.hls_downloader import Downloader, urljoin
+    from echo360.naive_m3u8_parser import NaiveM3U8Parser
+    from echo360.videos import EchoCloudVideo
+
+    urls = stream_url if isinstance(stream_url, list) else [stream_url]
+    single_url = urls[0]
+
+    # Convert session cookies to the format Downloader expects
+    selenium_cookies = [{"name": k, "value": v} for k, v in session.cookies.items()]
+
+    if single_url.endswith(".m3u8"):
+        r = session.get(single_url, timeout=20)
+        if not r.ok:
+            _LOGGER.error("Failed to fetch m3u8: %s", r.status_code)
+            return None
+
+        lines = r.content.decode().split("\n")
+        parser = NaiveM3U8Parser(lines)
+        try:
+            parser.parse()
+        except Exception as e:
+            _LOGGER.error("Failed to parse m3u8: %s", e)
+            return None
+
+        m3u8_video, m3u8_audio = parser.get_video_and_audio()
+        audio_m3u8 = urljoin(single_url, m3u8_audio) if m3u8_audio else (
+            urljoin(single_url, m3u8_video) if m3u8_video else None
+        )
+        if not audio_m3u8:
+            _LOGGER.error("No audio or video stream found in m3u8")
+            return None
+
+        downloader = Downloader(50, selenium_cookies=selenium_cookies)
+        downloader.run(audio_m3u8, output_dir, convert_to_mp4=False)
+        raw_file = downloader.result_file_name
+    else:
+        # Direct file URL (MP4, ts, etc.) — stream-download it
+        ext = single_url.split("?")[0].split(".")[-1]
+        raw_file = os.path.join(output_dir, f"{filename}_raw.{ext}")
+        r = session.get(single_url, stream=True, timeout=30)
+        if not r.ok:
+            _LOGGER.error("Failed to download direct URL: %s", r.status_code)
+            return None
+        with open(raw_file, "wb") as f:
+            for chunk in r.iter_content(65536):
+                f.write(chunk)
+
+    opus_file = os.path.join(output_dir, filename + ".opus")
+    if EchoCloudVideo._convert_to_opus(raw_file, opus_file):
+        try:
+            os.remove(raw_file)
+        except OSError:
+            pass
+        return opus_file
+
+    return None
+
+
 def download_lecture(lecture_id: int, output_dir: str) -> None:
     """Download audio for a single lecture. Runs in a worker thread."""
     from app.db import get_db
     from app import jobs
-    from echo360.videos import EchoCloudVideo
+
+    row = None
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": row["course_id"] if row else None, **data})
@@ -301,18 +410,36 @@ def download_lecture(lecture_id: int, output_dir: str) -> None:
 
     os.makedirs(output_dir, exist_ok=True)
 
+    safe_name = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")
+    filename = safe_name[:150]
+
+    # ── Fast path: no Chrome ──────────────────────────────────────────────────
+    video_json = json.loads(row["raw_json"])
+    stream_url = _extract_stream_url(video_json, row["hostname"])
+
+    if stream_url:
+        try:
+            session = _build_session_from_cookies()
+            audio_path = _download_audio_direct(session, stream_url, output_dir, filename)
+            if audio_path:
+                _set_status(lecture_id, "done", audio_path=audio_path)
+                _bcast({"status": "done", "audio_path": audio_path})
+                return
+            _LOGGER.warning("Fast download path returned no file for lecture %d, falling back to Chrome", lecture_id)
+        except Exception:
+            _LOGGER.warning("Fast download path failed for lecture %d, falling back to Chrome", lecture_id, exc_info=True)
+
+    # ── Slow fallback: Chrome ─────────────────────────────────────────────────
+    _LOGGER.info("Using Chrome fallback for lecture %d", lecture_id)
+    from echo360.videos import EchoCloudVideo
+
     driver = None
     try:
         driver = _build_driver()
         if not _load_session(driver, row["hostname"]):
             raise RuntimeError("No valid session. Please re-authenticate via the CLI.")
 
-        video_json = json.loads(row["raw_json"])
         video = EchoCloudVideo(video_json, driver, row["hostname"], alternative_feeds=False)
-
-        safe_name = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")
-        filename = safe_name[:150]
-
         result = video.download(output_dir, filename, audio_only=True)
 
         if result:

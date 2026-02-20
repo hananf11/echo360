@@ -8,7 +8,7 @@ from typing import AsyncIterator
 _loop: asyncio.AbstractEventLoop | None = None
 _listeners: list[asyncio.Queue] = []
 _lock = threading.Lock()
-_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="echo360-worker")
+_executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix="echo360-worker")
 
 
 def set_loop(loop: asyncio.AbstractEventLoop) -> None:
