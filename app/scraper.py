@@ -93,19 +93,55 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
             )
 
         driver.get(courses_page_url)
-        WebDriverWait(driver, 20).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/section/']"))
-        )
 
-        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/section/']")
+        # Wait for the page to finish its initial JS render
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
+        )
+        time.sleep(3)
+
+        current_url = driver.current_url
+        page_source = driver.page_source
+        _LOGGER.info("discover_course_urls: landed on %s", current_url)
+
+        # If redirected to a login page, raise a clear error
+        if "/login" in current_url or "sign-in" in current_url.lower():
+            raise RuntimeError("Session expired — please re-authenticate via the CLI.")
+
+        # Collect all hrefs from the page that contain a section UUID
+        all_hrefs: list[str] = driver.execute_script(
+            "return Array.from(document.querySelectorAll('[href]'))"
+            ".map(el => el.getAttribute('href') || '')"
+        )
+        _LOGGER.info("discover_course_urls: found %d hrefs on page", len(all_hrefs))
+
+        # Also scan the raw page source for any section UUIDs we might have missed
+        uuid_pattern = re.compile(
+            r"/section/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+            re.I,
+        )
         seen: set[str] = set()
         urls: list[str] = []
-        for link in links:
-            href = link.get_attribute("href") or ""
-            section_id = _extract_section_id(href)
-            if section_id and section_id not in seen:
-                seen.add(section_id)
-                urls.append(f"{hostname}/section/{section_id}/home")
+
+        for href in all_hrefs:
+            m = uuid_pattern.search(href)
+            if m and m.group(1) not in seen:
+                seen.add(m.group(1))
+                urls.append(f"{hostname}/section/{m.group(1)}/home")
+
+        for m in uuid_pattern.finditer(page_source):
+            if m.group(1) not in seen:
+                seen.add(m.group(1))
+                urls.append(f"{hostname}/section/{m.group(1)}/home")
+
+        _LOGGER.info("discover_course_urls: extracted %d unique section URLs", len(urls))
+
+        if not urls:
+            raise RuntimeError(
+                f"No courses found on that page (landed on: {current_url}). "
+                "The session may have expired or the page structure has changed."
+            )
+
         return urls
     finally:
         if driver:
