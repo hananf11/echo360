@@ -361,7 +361,10 @@ class EchoCloudVideo(EchoVideo):
                 sys.stdout.flush()
                 opus_file = os.path.join(output_dir, filename + ".opus")
                 if self._convert_to_opus(raw_file, opus_file):
-                    os.remove(raw_file)
+                    try:
+                        os.remove(raw_file)
+                    except OSError:
+                        pass
             else:
                 audio_file = None
                 if m3u8_audio is not None:

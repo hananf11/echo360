@@ -175,17 +175,27 @@ class EchoCloudCourse(EchoCourse):
     @property
     def course_name(self):
         if self._course_name is None:
-            # try each available video as some video might be special has contains
-            # no information about the course.
+            # Try multiple JSON paths across available videos, as the structure
+            # varies between Echo360 deployments.
+            _candidate_paths = [
+                lambda v: v["lesson"]["video"]["published"]["courseName"],
+                lambda v: v["lesson"]["lesson"]["displayName"],
+                lambda v: v["lesson"]["lesson"]["section"]["sectionName"],
+            ]
             for v in self.course_data["data"]:
-                try:
-                    self._course_name = v["lesson"]["video"]["published"]["courseName"]
+                for path in _candidate_paths:
+                    try:
+                        name = path(v)
+                        if name:
+                            self._course_name = name
+                            break
+                    except (KeyError, TypeError):
+                        pass
+                if self._course_name is not None:
                     break
-                except KeyError:
-                    pass
             if self._course_name is None:
-                # no available course name found...?
-                self._course_name = "[[UNTITLED]]"
+                # Fall back to the section UUID so the folder is at least identifiable
+                self._course_name = self._uuid
         return self._course_name
 
     @property
