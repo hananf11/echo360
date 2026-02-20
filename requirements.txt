@@ -10,3 +10,4 @@ tqdm
 fastapi
 uvicorn[standard]
 sse-starlette
+faster-whisper

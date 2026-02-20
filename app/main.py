@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 import re
 from contextlib import asynccontextmanager
@@ -10,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from app import db, jobs, scraper
+from app import db, jobs, scraper, transcriber
 
 STATIC_DIR = Path(__file__).parent / "static"
 AUDIO_DIR = os.environ.get("ECHO360_AUDIO_DIR", os.path.expanduser("~/echo360-library"))
@@ -33,6 +34,10 @@ class AddCourseRequest(BaseModel):
     url: str
 
 
+class TranscribeRequest(BaseModel):
+    model: str = "turbo"
+
+
 # ── Courses ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/courses")
@@ -41,7 +46,8 @@ def list_courses():
         rows = conn.execute(
             """
             SELECT c.*, COUNT(l.id) AS lecture_count,
-                   MIN(substr(l.date, 1, 4)) AS year
+                   MIN(substr(l.date, 1, 4)) AS year,
+                   SUM(CASE WHEN l.audio_status = 'downloading' THEN 1 ELSE 0 END) AS downloading_count
             FROM   courses  c
             LEFT JOIN lectures l ON l.course_id = c.id
             GROUP BY c.id
@@ -174,6 +180,66 @@ def download_all(course_id: int):
     )
     for lec in lectures:
         jobs.submit(scraper.download_lecture, lec["id"], course_dir)
+    return {"queued": len(lectures)}
+
+
+# ── Transcription ─────────────────────────────────────────────────────────────
+
+@app.post("/api/lectures/{lecture_id}/transcribe")
+def transcribe_lecture(lecture_id: int, req: TranscribeRequest | None = None):
+    with db.get_db() as conn:
+        row = conn.execute("SELECT * FROM lectures WHERE id = ?", [lecture_id]).fetchone()
+    if not row:
+        raise HTTPException(404, "Lecture not found")
+    if row["audio_status"] != "done":
+        raise HTTPException(400, "Audio not downloaded yet")
+
+    with db.get_db() as conn:
+        conn.execute(
+            "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
+            [lecture_id],
+        )
+    model = req.model if req else "turbo"
+    jobs.submit(transcriber.transcribe_lecture, lecture_id, model)
+    return {"status": "queued"}
+
+
+@app.get("/api/lectures/{lecture_id}/transcript")
+def get_transcript(lecture_id: int):
+    with db.get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM transcripts WHERE lecture_id = ? ORDER BY id DESC LIMIT 1",
+            [lecture_id],
+        ).fetchone()
+    if not row:
+        raise HTTPException(404, "Transcript not found")
+    return {
+        "model": row["model"],
+        "segments": json.loads(row["segments"]),
+        "created_at": row["created_at"],
+    }
+
+
+@app.post("/api/courses/{course_id}/transcribe-all")
+def transcribe_all(course_id: int):
+    with db.get_db() as conn:
+        course = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
+        lectures = conn.execute(
+            """SELECT * FROM lectures WHERE course_id = ?
+               AND audio_status = 'done'
+               AND transcript_status IN ('pending', 'error')""",
+            [course_id],
+        ).fetchall()
+    if not course:
+        raise HTTPException(404, "Course not found")
+
+    for lec in lectures:
+        with db.get_db() as conn:
+            conn.execute(
+                "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
+                [lec["id"]],
+            )
+        jobs.submit(transcriber.transcribe_lecture, lec["id"])
     return {"queued": len(lectures)}
 
 

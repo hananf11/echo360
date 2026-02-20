@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { PlusCircle, RefreshCw, BookOpen, Trash2 } from 'lucide-react'
-import { getCourses, syncCourse, deleteCourse } from '../api'
+import { PlusCircle, RefreshCw, BookOpen, Trash2, Download } from 'lucide-react'
+import { getCourses, syncCourse, deleteCourse, downloadAll } from '../api'
 import type { Course, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import AddCourseModal from './AddCourseModal'
@@ -9,25 +9,41 @@ import AddCourseModal from './AddCourseModal'
 export default function CourseLibrary() {
   const [courses, setCourses] = useState<Course[]>([])
   const [syncing, setSyncing] = useState<Set<number>>(new Set())
+  const [downloading, setDownloading] = useState<Map<number, number>>(new Map())
   const [showAdd, setShowAdd] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(() => {
     getCourses()
-      .then(setCourses)
+      .then(cs => {
+        setCourses(cs)
+        setDownloading(new Map(cs.filter(c => c.downloading_count > 0).map(c => [c.id, c.downloading_count])))
+      })
       .finally(() => setLoading(false))
   }, [])
 
   useEffect(() => { load() }, [load])
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-    if (msg.course_id === undefined) return
-    if (msg.type === 'sync_start') {
+    if (msg.type === 'sync_start' && msg.course_id !== undefined) {
       setSyncing(s => new Set(s).add(msg.course_id!))
     }
-    if (msg.type === 'sync_done' || msg.type === 'sync_error') {
+    if ((msg.type === 'sync_done' || msg.type === 'sync_error') && msg.course_id !== undefined) {
       setSyncing(s => { const n = new Set(s); n.delete(msg.course_id!); return n })
       load()
+    }
+    if (msg.type === 'lecture_update' && msg.course_id !== undefined) {
+      const cid = msg.course_id
+      if (msg.status === 'downloading') {
+        setDownloading(m => { const n = new Map(m); n.set(cid, (n.get(cid) ?? 0) + 1); return n })
+      } else if (msg.status === 'done' || msg.status === 'error') {
+        setDownloading(m => {
+          const n = new Map(m)
+          const count = (n.get(cid) ?? 1) - 1
+          if (count <= 0) n.delete(cid); else n.set(cid, count)
+          return n
+        })
+      }
     }
   }, [load])
 
@@ -86,14 +102,24 @@ export default function CourseLibrary() {
               <div key={year}>
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">{year}</h2>
-                  <button
-                    onClick={() => group.forEach(c => handleSync(c.id))}
-                    className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
-                    title="Sync all courses in this year"
-                  >
-                    <RefreshCw size={12} />
-                    Sync all
-                  </button>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => group.forEach(c => downloadAll(c.id))}
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
+                      title="Download all lectures in this year"
+                    >
+                      <Download size={12} />
+                      Download all
+                    </button>
+                    <button
+                      onClick={() => group.forEach(c => handleSync(c.id))}
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
+                      title="Sync all courses in this year"
+                    >
+                      <RefreshCw size={12} />
+                      Sync all
+                    </button>
+                  </div>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {group.map(course => (
@@ -112,6 +138,14 @@ export default function CourseLibrary() {
                   </p>
                 ) : (
                   <p className="text-xs text-amber-500/80 mt-0.5">Syncing…</p>
+                )}
+                {(downloading.get(course.id) ?? 0) > 0 && (
+                  <div className="flex items-center gap-1.5 mt-1.5">
+                    <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                    <p className="text-xs text-indigo-400">
+                      Downloading {downloading.get(course.id)} lecture{downloading.get(course.id) !== 1 ? 's' : ''}…
+                    </p>
+                  </div>
                 )}
               </div>
 

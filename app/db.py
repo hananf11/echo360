@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS lectures (
     UNIQUE(course_id, echo_id)
 );
 
+CREATE TABLE IF NOT EXISTS transcripts (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    lecture_id  INTEGER NOT NULL REFERENCES lectures(id) ON DELETE CASCADE,
+    model       TEXT    NOT NULL,
+    segments    TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     lecture_id    INTEGER REFERENCES lectures(id) ON DELETE SET NULL,
@@ -43,6 +51,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 def init_db() -> None:
     with get_db() as conn:
         conn.executescript(SCHEMA)
+        for col, defn in [
+            ("transcript_status", "TEXT NOT NULL DEFAULT 'pending'"),
+            ("transcript_model", "TEXT"),
+        ]:
+            try:
+                conn.execute(f"ALTER TABLE lectures ADD COLUMN {col} {defn}")
+            except Exception:
+                pass  # already exists
 
 
 @contextmanager

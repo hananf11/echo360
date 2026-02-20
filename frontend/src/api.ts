@@ -1,4 +1,4 @@
-import type { Course, Lecture } from './types'
+import type { Course, Lecture, Transcript } from './types'
 
 const BASE = '/api'
 
@@ -44,3 +44,16 @@ export const downloadLecture = (id: number): Promise<void> =>
 
 export const downloadAll = (courseId: number): Promise<{ queued: number }> =>
   fetch(`${BASE}/courses/${courseId}/download-all`, { method: 'POST' }).then(r => _json(r))
+
+export const transcribeLecture = (id: number, model = 'turbo'): Promise<{ status: string }> =>
+  fetch(`${BASE}/lectures/${id}/transcribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).then(r => _json(r))
+
+export const getTranscript = (id: number): Promise<Transcript> =>
+  fetch(`${BASE}/lectures/${id}/transcript`).then(r => _json(r))
+
+export const transcribeAll = (courseId: number): Promise<{ queued: number }> =>
+  fetch(`${BASE}/courses/${courseId}/transcribe-all`, { method: 'POST' }).then(r => _json(r))

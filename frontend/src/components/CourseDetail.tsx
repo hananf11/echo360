@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download } from 'lucide-react'
-import { getCourse, getLectures, downloadAll } from '../api'
+import { ArrowLeft, Download, Mic } from 'lucide-react'
+import { getCourse, getLectures, downloadAll, transcribeAll } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import LectureRow from './LectureRow'
@@ -14,6 +14,7 @@ export default function CourseDetail() {
   const [lectures, setLectures] = useState<Lecture[]>([])
   const [loading, setLoading] = useState(true)
   const [queuedCount, setQueuedCount] = useState<number | null>(null)
+  const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -37,6 +38,27 @@ export default function CourseDetail() {
         )
       )
     }
+    if (msg.type === 'transcription_start' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, transcript_status: 'transcribing' } : l
+        )
+      )
+    }
+    if (msg.type === 'transcription_done' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, transcript_status: 'done' } : l
+        )
+      )
+    }
+    if (msg.type === 'transcription_error' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, transcript_status: 'error' } : l
+        )
+      )
+    }
   }, [])
 
   useSSE(handleSSE)
@@ -46,10 +68,20 @@ export default function CourseDetail() {
     setQueuedCount(result.queued)
   }
 
+  const handleTranscribeAll = async () => {
+    const result = await transcribeAll(courseId)
+    setTranscribeQueuedCount(result.queued)
+  }
+
   const pendingCount = lectures.filter(
     l => l.audio_status === 'pending' || l.audio_status === 'error'
   ).length
   const doneCount = lectures.filter(l => l.audio_status === 'done').length
+  const pendingTranscriptCount = lectures.filter(
+    l =>
+      l.audio_status === 'done' &&
+      (l.transcript_status === 'pending' || l.transcript_status === 'error')
+  ).length
 
   return (
     <div className="max-w-4xl mx-auto px-6 py-10">
@@ -73,20 +105,36 @@ export default function CourseDetail() {
               </p>
             </div>
 
-            {pendingCount > 0 && (
-              <button
-                onClick={handleDownloadAll}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
-              >
-                <Download size={15} />
-                Download All ({pendingCount})
-              </button>
-            )}
+            <div className="flex items-center gap-2">
+              {pendingTranscriptCount > 0 && (
+                <button
+                  onClick={handleTranscribeAll}
+                  className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                >
+                  <Mic size={15} />
+                  Transcribe All ({pendingTranscriptCount})
+                </button>
+              )}
+              {pendingCount > 0 && (
+                <button
+                  onClick={handleDownloadAll}
+                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                >
+                  <Download size={15} />
+                  Download All ({pendingCount})
+                </button>
+              )}
+            </div>
           </div>
 
           {queuedCount !== null && (
             <p className="text-sm text-indigo-400 mb-4">
               {queuedCount} download{queuedCount !== 1 ? 's' : ''} queued.
+            </p>
+          )}
+          {transcribeQueuedCount !== null && (
+            <p className="text-sm text-violet-400 mb-4">
+              {transcribeQueuedCount} transcription{transcribeQueuedCount !== 1 ? 's' : ''} queued.
             </p>
           )}
 

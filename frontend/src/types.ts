@@ -6,6 +6,7 @@ export interface Course {
   hostname: string
   last_synced_at: string | null
   lecture_count: number
+  downloading_count: number
   year: string | null
 }
 
@@ -17,6 +18,14 @@ export interface Lecture {
   date: string
   audio_path: string | null
   audio_status: 'pending' | 'downloading' | 'done' | 'error'
+  transcript_status: 'pending' | 'queued' | 'transcribing' | 'done' | 'error'
+  transcript_model: string | null
+}
+
+export interface Transcript {
+  model: string
+  segments: { start: number; end: number; text: string }[]
+  created_at: string
 }
 
 export interface SSEMessage {

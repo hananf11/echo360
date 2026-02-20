@@ -275,7 +275,7 @@ def download_lecture(lecture_id: int, output_dir: str) -> None:
     from echo360.videos import EchoCloudVideo
 
     def _bcast(data: dict):
-        jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, **data})
+        jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": row["course_id"] if row else None, **data})
 
     with get_db() as conn:
         row = conn.execute(
