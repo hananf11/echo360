@@ -67,7 +67,7 @@ A FastAPI + React web interface lives alongside the CLI.
 
 ```bash
 # Start backend
-.venv/bin/uvicorn app.main:app --reload
+.venv/bin/uvicorn app.main:app --reload --port 8742
 
 # Build frontend (output goes to app/static/)
 cd frontend && npm run build
@@ -84,7 +84,7 @@ docker compose up           # subsequent runs
 docker compose up -d        # background
 ```
 
-Open `http://localhost:8000`. Persistent data (SQLite DB + audio files) is stored in the `echo360-data` Docker volume. The `_browser_persistent_session/` directory is bind-mounted so session cookies persist across container restarts.
+Open `http://localhost:8742`. Persistent data (SQLite DB + audio files) is stored in the `echo360-data` Docker volume. The `_browser_persistent_session/` directory is bind-mounted so session cookies persist across container restarts.
 
 **First use:** Run the CLI with `--persistent-session` to log in and save cookies, then start the web app. The web app uses those saved cookies for headless scraping.
 

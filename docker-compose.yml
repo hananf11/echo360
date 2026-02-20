@@ -2,7 +2,7 @@ services:
   echo360:
     build: .
     ports:
-      - "8000:8000"
+      - "8742:8742"
     volumes:
       # Persistent data: SQLite DB + downloaded audio files
       - echo360-data:/data

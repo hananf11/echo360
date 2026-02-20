@@ -38,6 +38,6 @@ COPY --from=frontend-builder /build/app/static ./app/static/
 ENV ECHO360_DB=/data/echo360.db
 ENV ECHO360_AUDIO_DIR=/data/audio
 
-EXPOSE 8000
+EXPOSE 8742
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8742"]
