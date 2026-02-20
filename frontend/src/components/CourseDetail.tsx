@@ -95,31 +95,33 @@ export default function CourseDetail() {
               No lectures found. Try syncing the course.
             </p>
           ) : (
-            <div className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-slate-700 text-left">
-                    <th className="px-5 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">
-                      Date
-                    </th>
-                    <th className="px-5 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider">
-                      Title
-                    </th>
-                    <th className="px-5 py-3 text-xs font-medium text-slate-500 uppercase tracking-wider text-right">
-                      Status
-                    </th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {lectures.map((lecture, i) => (
-                    <LectureRow
-                      key={lecture.id}
-                      lecture={lecture}
-                      isLast={i === lectures.length - 1}
-                    />
-                  ))}
-                </tbody>
-              </table>
+            <div className="flex flex-col gap-6">
+              {Object.entries(
+                lectures.reduce<Record<string, Lecture[]>>((groups, l) => {
+                  const year = l.date?.slice(0, 4) ?? 'Unknown'
+                  ;(groups[year] ??= []).push(l)
+                  return groups
+                }, {})
+              )
+                .sort(([a], [b]) => b.localeCompare(a))
+                .map(([year, group]) => (
+                  <div key={year} className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                    <div className="px-5 py-2.5 border-b border-slate-700 bg-slate-700/40">
+                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{year}</span>
+                    </div>
+                    <table className="w-full">
+                      <tbody>
+                        {group.map((lecture, i) => (
+                          <LectureRow
+                            key={lecture.id}
+                            lecture={lecture}
+                            isLast={i === group.length - 1}
+                          />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
             </div>
           )}
         </>
