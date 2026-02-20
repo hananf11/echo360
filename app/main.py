@@ -40,7 +40,8 @@ def list_courses():
     with db.get_db() as conn:
         rows = conn.execute(
             """
-            SELECT c.*, COUNT(l.id) AS lecture_count
+            SELECT c.*, COUNT(l.id) AS lecture_count,
+                   MIN(substr(l.date, 1, 4)) AS year
             FROM   courses  c
             LEFT JOIN lectures l ON l.course_id = c.id
             GROUP BY c.id

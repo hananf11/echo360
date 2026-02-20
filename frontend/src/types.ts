@@ -6,6 +6,7 @@ export interface Course {
   hostname: string
   last_synced_at: string | null
   lecture_count: number
+  year: string | null
 }
 
 export interface Lecture {

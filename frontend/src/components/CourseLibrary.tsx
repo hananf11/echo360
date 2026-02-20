@@ -75,8 +75,20 @@ export default function CourseLibrary() {
           <p className="text-sm mt-1">Click "Add Course" and paste in an Echo360 URL.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {courses.map(course => (
+        <div className="flex flex-col gap-8">
+          {Object.entries(
+            courses.reduce<Record<string, Course[]>>((groups, c) => {
+              const year = c.year ?? 'Unsynced'
+              ;(groups[year] ??= []).push(c)
+              return groups
+            }, {})
+          )
+            .sort(([a], [b]) => b.localeCompare(a))
+            .map(([year, group]) => (
+              <div key={year}>
+                <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">{year}</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                  {group.map(course => (
             <div
               key={course.id}
               className="bg-slate-800 rounded-xl p-5 flex flex-col gap-4 border border-slate-700 hover:border-slate-500 transition-colors"
@@ -121,7 +133,10 @@ export default function CourseLibrary() {
                 </Link>
               </div>
             </div>
-          ))}
+                  ))}
+                </div>
+              </div>
+            ))}
         </div>
       )}
 
