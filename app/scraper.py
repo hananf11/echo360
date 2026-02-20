@@ -94,10 +94,20 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
 
         driver.get(courses_page_url)
 
-        # Wait for initial JS render then poll for section UUIDs to appear
+        # Wait for initial JS render
         WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
         )
+        time.sleep(2)
+
+        # Echo360 may land on Library — click the Courses nav link if visible
+        try:
+            courses_link = driver.find_element(By.XPATH, "//a[normalize-space()='Courses'] | //span[normalize-space()='Courses']/parent::a")
+            if courses_link:
+                courses_link.click()
+                time.sleep(3)
+        except Exception:
+            pass
 
         uuid_pattern = re.compile(
             r"/section/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
