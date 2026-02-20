@@ -417,6 +417,23 @@ def start_download_binary(binary_downloader, binary_type, manual=False):
     print("=" * 65)
 
 
+def _persist_session_cookies(webdriver):
+    """Convert session cookies (no expiry) to persistent cookies with a 30-day expiry.
+
+    Chrome does not save session cookies to disk when it closes, so without this
+    the Echo360 JWT is lost on every run and requires re-login.
+    """
+    expiry = int(time.time()) + 30 * 24 * 60 * 60  # 30 days from now
+    for cookie in webdriver.get_cookies():
+        if "expiry" not in cookie:
+            try:
+                webdriver.delete_cookie(cookie["name"])
+                cookie["expiry"] = expiry
+                webdriver.add_cookie(cookie)
+            except Exception:
+                pass
+
+
 def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False):
     webdriver.get(url)
     # for making it compatiable with Python 2 & 3
@@ -441,9 +458,8 @@ def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False):
 
                 # automatically wait for the Auth Token from webdriver
                 if any("ECHO_JWT" in c["name"] for c in webdriver.get_cookies()):
-                    # with open('cookies', 'wb') as f:
-                    #     pickle.dump(webdriver.get_cookies(), f)
-                    #     exit()
+                    # Make all session cookies persistent so they survive browser restarts
+                    _persist_session_cookies(webdriver)
                     break
                 time.sleep(2)
             else:
