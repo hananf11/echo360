@@ -203,7 +203,14 @@ class EchoCloudCourse(EchoCourse):
         return self.course_name
 
     def _get_course_data(self):
+        import time as _time
         try:
+            # Navigate to the section home page first so Echo360 can fully
+            # establish the session (important when restoring from saved cookies).
+            home_url = self.video_url.replace("/syllabus", "/home")
+            self.driver.get(home_url)
+            _time.sleep(2)
+
             self.driver.get(self.video_url)
             _LOGGER.debug(
                 "Dumping course page at %s: %s",
@@ -213,7 +220,7 @@ class EchoCloudCourse(EchoCourse):
             # use requests to retrieve data
             session = requests.Session()
             session.headers.update({"Accept": "application/json"})
-            # load cookies
+            # load cookies (refreshed after navigating to the home page)
             for cookie in self._driver.get_cookies():
                 session.cookies.set(cookie["name"], cookie["value"])
 
@@ -225,15 +232,13 @@ class EchoCloudCourse(EchoCourse):
         except ValueError as e:
             raise Exception("Unable to retrieve JSON (course_data) from url", e)
 
-        # If requests returned empty/non-JSON (can happen with restored sessions),
-        # fall back to reading the page source from the webdriver directly.
+        # If requests returned empty/non-JSON fall back to the webdriver page source.
+        # Chrome wraps JSON API responses in <html><body><pre>...</pre></body></html>
         if not json_str or not json_str.startswith("{"):
             _LOGGER.debug("requests returned non-JSON, falling back to webdriver page source")
-            page = self._driver.page_source
-            # Chrome wraps JSON API responses in <html><body><pre>...</pre></body></html>
             import re as _re
-            match = _re.search(r"<pre[^>]*>(.*)</pre>", page, _re.DOTALL)
-            json_str = match.group(1) if match else page
+            match = _re.search(r"<pre[^>]*>(.*)</pre>", self._driver.page_source, _re.DOTALL)
+            json_str = match.group(1) if match else self._driver.page_source
 
         self.course_data = json.loads(json_str)
         return self.course_data
