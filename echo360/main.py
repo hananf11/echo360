@@ -458,7 +458,8 @@ def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False,
     # for making it compatiable with Python 2 & 3
     from sys import version_info
 
-    if echo360_cloud and not manual and persistent_session:
+    # Try to restore a saved session regardless of manual/auto mode
+    if persistent_session:
         print(" >> Trying saved session... ", end="", flush=True)
         if _try_load_cookies(webdriver, url):
             print("OK (no login required)")
@@ -478,9 +479,6 @@ def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False,
         while True:
             if echo360_cloud and not manual:
                 if any("ECHO_JWT" in c["name"] for c in webdriver.get_cookies()):
-                    if persistent_session:
-                        _save_cookies(webdriver)
-                        print(" >> Session saved for future runs.")
                     break
                 time.sleep(2)
             else:
@@ -492,6 +490,11 @@ def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False,
                     break
     except KeyboardInterrupt:
         pass
+
+    # Save cookies after successful login regardless of manual/auto mode
+    if persistent_session:
+        _save_cookies(webdriver)
+        print(" >> Session saved for future runs.")
 
 
 def setup_logging(enable_degbug=False):
