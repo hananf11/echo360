@@ -86,7 +86,17 @@ export default function CourseLibrary() {
             .sort(([a], [b]) => b.localeCompare(a))
             .map(([year, group]) => (
               <div key={year}>
-                <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">{year}</h2>
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">{year}</h2>
+                  <button
+                    onClick={() => group.forEach(c => handleSync(c.id))}
+                    className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
+                    title="Sync all courses in this year"
+                  >
+                    <RefreshCw size={12} />
+                    Sync all
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
                   {group.map(course => (
             <div
