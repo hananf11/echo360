@@ -7,6 +7,7 @@ export interface Course {
   last_synced_at: string | null
   lecture_count: number
   downloading_count: number
+  pending_count: number
   year: string | null
 }
 

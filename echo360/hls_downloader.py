@@ -3,6 +3,7 @@ import gevent
 from gevent.pool import Pool
 import requests
 import os, sys
+import tempfile
 import time
 import tqdm
 
@@ -75,9 +76,12 @@ class Downloader:
         return session
 
     def run(self, m3u8_url, dir="", convert_to_mp4=True):
-        self.dir = dir
-        if self.dir and not os.path.isdir(self.dir):
-            os.makedirs(self.dir)
+        # Use a unique temp subdirectory so concurrent downloads don't share
+        # segment filenames and corrupt each other's files.
+        self._output_dir = dir
+        self.dir = tempfile.mkdtemp(dir=dir if dir else None)
+        if dir and not os.path.isdir(dir):
+            os.makedirs(dir)
         r = self.session.get(m3u8_url, timeout=10)
         if r.ok:
             body = r.content
@@ -121,15 +125,14 @@ class Downloader:
                     g1.join()
         else:
             print("Failed status code: {}".format(r.status_code))
-        infile_name = os.path.join(
-            self.dir,
+        joined_name = (
             self._result_file_name.split(".")[0]
             + "_all."
-            + self.result_file_name.split(".")[-1],
+            + self.result_file_name.split(".")[-1]
         )
-        self._result_file_name = infile_name
+        infile_name = os.path.join(self.dir, joined_name)
         if convert_to_mp4:
-            outfile_name = infile_name.split(".")[0] + ".mp4"
+            outfile_name = os.path.join(self.dir, joined_name.split(".")[0] + ".mp4")
             sys.stdout.write("  > Converting to mp4... ")
             sys.stdout.flush()
             try:
@@ -139,16 +142,21 @@ class Downloader:
                     outputs={outfile_name: ["-c", "copy"]},
                 )
                 ff.run()
-                # delete source file after done
                 os.remove(infile_name)
-                self._result_file_name = outfile_name
+                infile_name = outfile_name
                 print("Done!")
             except ffmpy.FFExecutableNotFoundError:
                 print('Skipping! Because "ffmpeg" not installed.')
-                self._result_file_name = infile_name
             except ffmpy.FFRuntimeError:
                 print("Error! ffmpeg exited with non-zero status code.")
-                self._result_file_name = infile_name
+        # Move result out of temp dir to the intended output directory
+        final_name = os.path.join(self._output_dir, os.path.basename(infile_name))
+        os.rename(infile_name, final_name)
+        try:
+            os.rmdir(self.dir)  # clean up temp dir (only succeeds if empty)
+        except OSError:
+            pass
+        self._result_file_name = final_name
 
     def _download(self, ts_list):
         if len(ts_list) == 1:

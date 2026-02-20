@@ -9,16 +9,12 @@ import AddCourseModal from './AddCourseModal'
 export default function CourseLibrary() {
   const [courses, setCourses] = useState<Course[]>([])
   const [syncing, setSyncing] = useState<Set<number>>(new Set())
-  const [downloading, setDownloading] = useState<Map<number, number>>(new Map())
   const [showAdd, setShowAdd] = useState(false)
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(() => {
     getCourses()
-      .then(cs => {
-        setCourses(cs)
-        setDownloading(new Map(cs.filter(c => c.downloading_count > 0).map(c => [c.id, c.downloading_count])))
-      })
+      .then(setCourses)
       .finally(() => setLoading(false))
   }, [])
 
@@ -34,16 +30,20 @@ export default function CourseLibrary() {
     }
     if (msg.type === 'lecture_update' && msg.course_id !== undefined) {
       const cid = msg.course_id
-      if (msg.status === 'downloading') {
-        setDownloading(m => { const n = new Map(m); n.set(cid, (n.get(cid) ?? 0) + 1); return n })
-      } else if (msg.status === 'done' || msg.status === 'error') {
-        setDownloading(m => {
-          const n = new Map(m)
-          const count = (n.get(cid) ?? 1) - 1
-          if (count <= 0) n.delete(cid); else n.set(cid, count)
-          return n
-        })
-      }
+      setCourses(prev => prev.map(c => {
+        if (c.id !== cid) return c
+        let { downloading_count, pending_count } = c
+        if (msg.status === 'downloading') {
+          downloading_count += 1
+          pending_count = Math.max(0, pending_count - 1)
+        } else if (msg.status === 'done') {
+          downloading_count = Math.max(0, downloading_count - 1)
+        } else if (msg.status === 'error') {
+          downloading_count = Math.max(0, downloading_count - 1)
+          pending_count += 1
+        }
+        return { ...c, downloading_count, pending_count }
+      }))
     }
   }, [load])
 
@@ -139,13 +139,18 @@ export default function CourseLibrary() {
                 ) : (
                   <p className="text-xs text-amber-500/80 mt-0.5">Syncing…</p>
                 )}
-                {(downloading.get(course.id) ?? 0) > 0 && (
+                {course.downloading_count > 0 && (
                   <div className="flex items-center gap-1.5 mt-1.5">
                     <div className="w-2.5 h-2.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
                     <p className="text-xs text-indigo-400">
-                      Downloading {downloading.get(course.id)} lecture{downloading.get(course.id) !== 1 ? 's' : ''}…
+                      Downloading {course.downloading_count} lecture{course.downloading_count !== 1 ? 's' : ''}…
                     </p>
                   </div>
+                )}
+                {course.pending_count > 0 && course.downloading_count === 0 && (
+                  <p className="text-xs text-slate-500 mt-1.5">
+                    {course.pending_count} not yet downloaded
+                  </p>
                 )}
               </div>
 

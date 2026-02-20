@@ -47,7 +47,8 @@ def list_courses():
             """
             SELECT c.*, COUNT(l.id) AS lecture_count,
                    MIN(substr(l.date, 1, 4)) AS year,
-                   SUM(CASE WHEN l.audio_status = 'downloading' THEN 1 ELSE 0 END) AS downloading_count
+                   SUM(CASE WHEN l.audio_status = 'downloading' THEN 1 ELSE 0 END) AS downloading_count,
+                   SUM(CASE WHEN l.audio_status IN ('pending', 'error') THEN 1 ELSE 0 END) AS pending_count
             FROM   courses  c
             LEFT JOIN lectures l ON l.course_id = c.id
             GROUP BY c.id
