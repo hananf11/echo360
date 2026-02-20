@@ -392,7 +392,8 @@ def main():
     )
     if setup_credential:
         run_setup_credential(
-            downloader._driver, course_hostname, echo360_cloud=True, manual=manual
+            downloader._driver, course_hostname, echo360_cloud=True, manual=manual,
+            persistent_session=persistent_session,
         )
         try:
             downloader._driver.set_window_size(0, 0)
@@ -417,28 +418,54 @@ def start_download_binary(binary_downloader, binary_type, manual=False):
     print("=" * 65)
 
 
-def _persist_session_cookies(webdriver):
-    """Convert session cookies (no expiry) to persistent cookies with a 30-day expiry.
-
-    Chrome does not save session cookies to disk when it closes, so without this
-    the Echo360 JWT is lost on every run and requires re-login.
-    """
-    expiry = int(time.time()) + 30 * 24 * 60 * 60  # 30 days from now
-    for cookie in webdriver.get_cookies():
-        if "expiry" not in cookie:
-            try:
-                webdriver.delete_cookie(cookie["name"])
-                cookie["expiry"] = expiry
-                webdriver.add_cookie(cookie)
-            except Exception:
-                pass
+def _cookies_file_path():
+    return os.path.join(PERSISTENT_SESSION_FOLDER, "cookies.json")
 
 
-def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False):
+def _save_cookies(webdriver):
+    """Save all current browser cookies to a JSON file."""
+    import json
+    os.makedirs(PERSISTENT_SESSION_FOLDER, exist_ok=True)
+    with open(_cookies_file_path(), "w") as f:
+        json.dump(webdriver.get_cookies(), f)
+
+
+def _try_load_cookies(webdriver, url):
+    """Load saved cookies into the browser and return True if a valid JWT is found."""
+    import json
+    path = _cookies_file_path()
+    if not os.path.exists(path):
+        return False
+    # Must navigate to the domain before cookies can be set
     webdriver.get(url)
+    with open(path) as f:
+        cookies = json.load(f)
+    for cookie in cookies:
+        # Remove keys that Selenium doesn't accept
+        cookie.pop("sameSite", None)
+        try:
+            webdriver.add_cookie(cookie)
+        except Exception:
+            pass
+    # Refresh so Echo360 sees the restored cookies
+    webdriver.refresh()
+    time.sleep(2)
+    return any("ECHO_JWT" in c["name"] for c in webdriver.get_cookies())
+
+
+def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False,
+                         persistent_session=False):
     # for making it compatiable with Python 2 & 3
     from sys import version_info
 
+    if echo360_cloud and not manual and persistent_session:
+        print(" >> Trying saved session... ", end="", flush=True)
+        if _try_load_cookies(webdriver, url):
+            print("OK (no login required)")
+            return
+        print("expired or not found, please log in.")
+
+    webdriver.get(url)
     try:
         if echo360_cloud and not manual:
             print(
@@ -450,16 +477,10 @@ def run_setup_credential(webdriver, url, echo360_cloud=False, manual=False):
             print(" >> After you finished logging in, type 'continue' in the terminal.")
         while True:
             if echo360_cloud and not manual:
-                # for debugging:
-                # import pickle
-                # with open("cookies", "rb") as f:
-                #     for c in pickle.load(f):
-                #         webdriver.add_cookie(c)
-
-                # automatically wait for the Auth Token from webdriver
                 if any("ECHO_JWT" in c["name"] for c in webdriver.get_cookies()):
-                    # Make all session cookies persistent so they survive browser restarts
-                    _persist_session_cookies(webdriver)
+                    if persistent_session:
+                        _save_cookies(webdriver)
+                        print(" >> Session saved for future runs.")
                     break
                 time.sleep(2)
             else:
