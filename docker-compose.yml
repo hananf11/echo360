@@ -1,0 +1,17 @@
+services:
+  echo360:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persistent data: SQLite DB + downloaded audio files
+      - echo360-data:/data
+      # Chrome session cookies so you only log in once
+      - ./_browser_persistent_session:/app/_browser_persistent_session
+    environment:
+      ECHO360_DB: /data/echo360.db
+      ECHO360_AUDIO_DIR: /data/audio
+    restart: unless-stopped
+
+volumes:
+  echo360-data:

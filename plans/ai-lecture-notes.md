@@ -157,6 +157,35 @@ Configured via `settings.json` — backend name, model name, and API key if requ
 
 ---
 
+## Docker Deployment
+
+**Goal:** Single-command stack spin-up so the full app (backend, frontend, Chromium, ffmpeg) runs in a reproducible container.
+
+**Design:**
+- Multi-stage Dockerfile: `node:20-alpine` builds the React frontend, `python:3.12-slim` is the runtime
+- Runtime image installs: `chromium`, `chromium-driver`, `ffmpeg`, Python deps from `requirements.txt`
+- `CHROME_BIN` / `CHROMEDRIVER_PATH` env vars point the existing Selenium code at the system Chromium
+- Two named volumes: `echo360-data` (SQLite DB + audio files), bind-mounted `_browser_persistent_session/` (cookies)
+- All configuration via environment variables (`ECHO360_DB`, `ECHO360_AUDIO_DIR`)
+
+**Usage:**
+```bash
+# Build and start
+docker compose up --build
+
+# Just start (after first build)
+docker compose up
+
+# Run in background
+docker compose up -d
+```
+
+Open `http://localhost:8000`. First time you add a course the scraper will need to log in — a Chrome window will not be visible (headless), so the session cookie flow handles authentication.
+
+**Files:** `Dockerfile`, `docker-compose.yml`
+
+---
+
 ## Phase 6 — Frame Extraction (Future)
 
 Placeholder design for a later phase:
