@@ -94,41 +94,42 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
 
         driver.get(courses_page_url)
 
-        # Wait for the page to finish its initial JS render
-        WebDriverWait(driver, 30).until(
+        # Wait for initial JS render then poll for section UUIDs to appear
+        WebDriverWait(driver, 15).until(
             EC.presence_of_element_located((By.CSS_SELECTOR, "body"))
         )
-        time.sleep(3)
 
-        current_url = driver.current_url
-        page_source = driver.page_source
-        _LOGGER.info("discover_course_urls: landed on %s", current_url)
-
-        # If redirected to a login page, raise a clear error
-        if "/login" in current_url or "sign-in" in current_url.lower():
-            raise RuntimeError("Session expired — please re-authenticate via the CLI.")
-
-        # Collect all hrefs from the page that contain a section UUID
-        all_hrefs: list[str] = driver.execute_script(
-            "return Array.from(document.querySelectorAll('[href]'))"
-            ".map(el => el.getAttribute('href') || '')"
-        )
-        _LOGGER.info("discover_course_urls: found %d hrefs on page", len(all_hrefs))
-
-        # Also scan the raw page source for any section UUIDs we might have missed
         uuid_pattern = re.compile(
             r"/section/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
             re.I,
         )
+
+        # Poll for up to 20s — the SPA loads course data via XHR after initial render
+        page_source = ""
+        for _ in range(10):
+            time.sleep(2)
+            page_source = driver.page_source
+            if uuid_pattern.search(page_source):
+                break
+            # Scroll down to trigger any lazy-loaded content
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight)")
+
+        current_url = driver.current_url
+        _LOGGER.info("discover_course_urls: landed on %s, page length %d", current_url, len(page_source))
+
+        # Save a screenshot for debugging
+        try:
+            screenshot_path = os.path.join(_PROJ_ROOT, "debug_discover.png")
+            driver.save_screenshot(screenshot_path)
+            _LOGGER.info("discover_course_urls: screenshot saved to %s", screenshot_path)
+        except Exception:
+            pass
+
+        if "/login" in current_url or "sign-in" in current_url.lower():
+            raise RuntimeError("Session expired — please re-authenticate via the CLI.")
+
         seen: set[str] = set()
         urls: list[str] = []
-
-        for href in all_hrefs:
-            m = uuid_pattern.search(href)
-            if m and m.group(1) not in seen:
-                seen.add(m.group(1))
-                urls.append(f"{hostname}/section/{m.group(1)}/home")
-
         for m in uuid_pattern.finditer(page_source):
             if m.group(1) not in seen:
                 seen.add(m.group(1))
