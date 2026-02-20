@@ -20,6 +20,13 @@ export const addCourse = (url: string): Promise<Course> =>
     body: JSON.stringify({ url }),
   }).then(r => _json(r))
 
+export const discoverCourses = (url: string): Promise<{ added: number; skipped: number }> =>
+  fetch(`${BASE}/courses/discover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  }).then(r => _json(r))
+
 export const getCourse = (id: number): Promise<Course> =>
   fetch(`${BASE}/courses/${id}`).then(r => _json(r))
 

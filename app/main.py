@@ -86,6 +86,33 @@ def get_course(course_id: int):
     return dict(row)
 
 
+@app.post("/api/courses/discover")
+def discover_courses(req: AddCourseRequest):
+    """Scrape the Echo360 /courses page and bulk-add every course found."""
+    url = req.url.strip()
+    course_urls = scraper.discover_course_urls(url)
+    if not course_urls:
+        raise HTTPException(404, "No courses found on that page")
+
+    added, skipped = 0, 0
+    for course_url in course_urls:
+        section_id = scraper._extract_section_id(course_url)
+        hostname = scraper._extract_hostname(course_url)
+        try:
+            with db.get_db() as conn:
+                conn.execute(
+                    "INSERT INTO courses (url, section_id, hostname) VALUES (?, ?, ?)",
+                    [course_url, section_id, hostname],
+                )
+                course_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            jobs.submit(scraper.sync_course, course_id, course_url)
+            added += 1
+        except Exception:
+            skipped += 1
+
+    return {"added": added, "skipped": skipped}
+
+
 @app.post("/api/courses/{course_id}/sync")
 def sync_course(course_id: int):
     with db.get_db() as conn:

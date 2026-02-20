@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import { PlusCircle, RefreshCw, BookOpen, Trash2 } from 'lucide-react'
-import { getCourses, addCourse, syncCourse, deleteCourse } from '../api'
+import { getCourses, syncCourse, deleteCourse } from '../api'
 import type { Course, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import AddCourseModal from './AddCourseModal'
@@ -33,9 +33,7 @@ export default function CourseLibrary() {
 
   useSSE(handleSSE)
 
-  const handleAdd = async (url: string) => {
-    await addCourse(url)
-    setShowAdd(false)
+  const handleDone = () => {
     load()
   }
 
@@ -151,7 +149,7 @@ export default function CourseLibrary() {
       )}
 
       {showAdd && (
-        <AddCourseModal onAdd={handleAdd} onClose={() => setShowAdd(false)} />
+        <AddCourseModal onDone={handleDone} onClose={() => setShowAdd(false)} />
       )}
     </div>
   )

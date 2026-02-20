@@ -74,6 +74,47 @@ def _extract_section_id(url: str) -> str:
     return m.group() if m else ""
 
 
+# ── Courses-page discovery ────────────────────────────────────────────────────
+
+def discover_course_urls(courses_page_url: str) -> list[str]:
+    """Navigate to the Echo360 /courses listing page and return all section URLs."""
+    from selenium.webdriver.common.by import By
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    hostname = _extract_hostname(courses_page_url)
+    driver = None
+    try:
+        driver = _build_driver()
+        if not _load_session(driver, hostname):
+            raise RuntimeError(
+                "No saved session found. Run the CLI first to log in:\n"
+                "  python echo360.py URL --chrome --persistent-session"
+            )
+
+        driver.get(courses_page_url)
+        WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located((By.CSS_SELECTOR, "a[href*='/section/']"))
+        )
+
+        links = driver.find_elements(By.CSS_SELECTOR, "a[href*='/section/']")
+        seen: set[str] = set()
+        urls: list[str] = []
+        for link in links:
+            href = link.get_attribute("href") or ""
+            section_id = _extract_section_id(href)
+            if section_id and section_id not in seen:
+                seen.add(section_id)
+                urls.append(f"{hostname}/section/{section_id}/home")
+        return urls
+    finally:
+        if driver:
+            try:
+                driver.quit()
+            except Exception:
+                pass
+
+
 # ── Course sync ───────────────────────────────────────────────────────────────
 
 def sync_course(course_id: int, course_url: str) -> None:
