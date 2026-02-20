@@ -163,6 +163,14 @@ def handle_args():
                 some 'echo360.org' hosts.",
     )
     parser.add_argument(
+        "--audio-only",
+        action="store_true",
+        default=False,
+        dest="audio_only",
+        help="Download audio only (no video). Saves as .opus files. "
+             "Much smaller than video; suitable for transcription.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         default=False,
@@ -253,6 +261,7 @@ def handle_args():
         args["alternative_feeds"],
         args["echo360cloud"],
         args["persistent_session"],
+        args["audio_only"],
     )
 
 
@@ -274,6 +283,7 @@ def main():
         alternative_feeds,
         usingEcho360Cloud,
         persistent_session,
+        audio_only,
     ) = handle_args()
 
     setup_logging(enable_degbug)
@@ -372,6 +382,7 @@ def main():
         webdriver_to_use=webdriver_to_use,
         interactive_mode=interactive_mode,
         persistent_session=persistent_session,
+        audio_only=audio_only,
     )
 
     _LOGGER.debug(

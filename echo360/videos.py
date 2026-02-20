@@ -145,26 +145,35 @@ class EchoVideo(object):
         print("Exception: {}".format(str(e)))
         sys.exit(1)
 
-    def download(self, output_dir, filename, pool_size=50):
+    def download(self, output_dir, filename, pool_size=50, audio_only=False):
         print("")
         print("-" * 60)
         print('Downloading "{}"'.format(filename))
-        self._download_url_to_dir(self.url, output_dir, filename, pool_size)
+        self._download_url_to_dir(self.url, output_dir, filename, pool_size, audio_only=audio_only)
         print("-" * 60)
         return True
 
     def _download_url_to_dir(
-        self, url, output_dir, filename, pool_size, convert_to_mp4=True
+        self, url, output_dir, filename, pool_size, convert_to_mp4=True, audio_only=False
     ):
         echo360_downloader = Downloader(
             pool_size, selenium_cookies=self._driver.get_cookies()
         )
-        echo360_downloader.run(url, output_dir, convert_to_mp4=convert_to_mp4)
+        echo360_downloader.run(url, output_dir, convert_to_mp4=(convert_to_mp4 and not audio_only))
 
         # rename file
         ext = echo360_downloader.result_file_name.split(".")[-1]
         result_full_path = os.path.join(output_dir, "{0}.{1}".format(filename, ext))
         os.rename(os.path.join(echo360_downloader.result_file_name), result_full_path)
+
+        if audio_only:
+            opus_path = os.path.join(output_dir, filename + ".opus")
+            sys.stdout.write("  > Converting to opus... ")
+            sys.stdout.flush()
+            if EchoCloudVideo._convert_to_opus(result_full_path, opus_path):
+                os.remove(result_full_path)
+                return opus_path
+
         return result_full_path
 
     def _download_url_to_dir_request(self, session, url, output_dir, filename):
@@ -259,7 +268,7 @@ class EchoCloudVideo(EchoVideo):
         self._date = self.get_date(video_json)
         self._title = video_json["lesson"]["lesson"]["name"]
 
-    def download(self, output_dir, filename, pool_size=50):
+    def download(self, output_dir, filename, pool_size=50, audio_only=False):
         print("")
         print("-" * 60)
         print('Downloading "{}"'.format(filename))
@@ -289,15 +298,16 @@ class EchoCloudVideo(EchoVideo):
                 else filename
             )
             result = self.download_single(
-                session, single_url, output_dir, new_filename, pool_size
+                session, single_url, output_dir, new_filename, pool_size, audio_only=audio_only
             )
             final_result = final_result and result
 
         return final_result
 
-    def download_single(self, session, single_url, output_dir, filename, pool_size):
-        if os.path.exists(os.path.join(output_dir, filename + ".mp4")):
-            print(" > Skipping downloaded video")
+    def download_single(self, session, single_url, output_dir, filename, pool_size, audio_only=False):
+        out_ext = ".opus" if audio_only else ".mp4"
+        if os.path.exists(os.path.join(output_dir, filename + out_ext)):
+            print(" > Skipping already downloaded {}".format("audio" if audio_only else "video"))
             print("-" * 60)
             return True
         if single_url.endswith(".m3u8"):
@@ -307,8 +317,6 @@ class EchoCloudVideo(EchoVideo):
                 return False
 
             lines = [n for n in r.content.decode().split("\n")]
-            m3u8_video = None
-            m3u8_audio = None
 
             _LOGGER.debug("Searching for m3u8 with content {}".format(lines))
 
@@ -322,60 +330,113 @@ class EchoCloudVideo(EchoVideo):
 
             m3u8_video, m3u8_audio = m3u8_parser.get_video_and_audio()
 
-            if (
-                m3u8_video is None
-            ):  # even if audio is None it's okay, maybe audio is include with video
+            if m3u8_video is None:  # even if audio is None it's okay, maybe audio is include with video
                 print("ERROR: Failed to find video m3u8... skipping this one")
                 return False
-            # NOW we can finally start downloading!
+
             from .hls_downloader import urljoin
 
-            audio_file = None
-            if m3u8_audio is not None:
-                print("  > Downloading audio:")
-                audio_file = self._download_url_to_dir(
-                    urljoin(single_url, m3u8_audio),
+            if audio_only:
+                if m3u8_audio is not None:
+                    # Separate audio stream exists — download only that
+                    print("  > Downloading audio:")
+                    raw_file = self._download_url_to_dir(
+                        urljoin(single_url, m3u8_audio),
+                        output_dir,
+                        filename + "_audio",
+                        pool_size,
+                        convert_to_mp4=False,
+                    )
+                else:
+                    # No separate audio stream; audio is muxed into video — download video and extract
+                    print("  > Downloading video (for audio extraction):")
+                    raw_file = self._download_url_to_dir(
+                        urljoin(single_url, m3u8_video),
+                        output_dir,
+                        filename + "_video",
+                        pool_size,
+                        convert_to_mp4=False,
+                    )
+                sys.stdout.write("  > Converting to opus... ")
+                sys.stdout.flush()
+                opus_file = os.path.join(output_dir, filename + ".opus")
+                if self._convert_to_opus(raw_file, opus_file):
+                    os.remove(raw_file)
+            else:
+                audio_file = None
+                if m3u8_audio is not None:
+                    print("  > Downloading audio:")
+                    audio_file = self._download_url_to_dir(
+                        urljoin(single_url, m3u8_audio),
+                        output_dir,
+                        filename + "_audio",
+                        pool_size,
+                        convert_to_mp4=False,
+                    )
+                print("  > Downloading video:")
+                video_file = self._download_url_to_dir(
+                    urljoin(single_url, m3u8_video),
                     output_dir,
-                    filename + "_audio",
+                    filename + "_video",
                     pool_size,
                     convert_to_mp4=False,
                 )
-            print("  > Downloading video:")
-            video_file = self._download_url_to_dir(
-                urljoin(single_url, m3u8_video),
-                output_dir,
-                filename + "_video",
-                pool_size,
-                convert_to_mp4=False,
-            )
-            sys.stdout.write("  > Converting to mp4... ")
-            sys.stdout.flush()
+                sys.stdout.write("  > Converting to mp4... ")
+                sys.stdout.flush()
 
-            # combine audio file with video (separate audio might not exists.)
-            if self.combine_audio_video(
-                audio_file=audio_file,
-                video_file=video_file,
-                final_file=os.path.join(output_dir, filename + ".mp4"),
-            ):
-                # remove left-over plain audio/video files. (if mixing was successful)
-                if audio_file is not None:
-                    os.remove(audio_file)
-                os.remove(video_file)
+                # combine audio file with video (separate audio might not exists.)
+                if self.combine_audio_video(
+                    audio_file=audio_file,
+                    video_file=video_file,
+                    final_file=os.path.join(output_dir, filename + ".mp4"),
+                ):
+                    # remove left-over plain audio/video files. (if mixing was successful)
+                    if audio_file is not None:
+                        os.remove(audio_file)
+                    os.remove(video_file)
 
-        else:  # ends with mp4
+        else:  # direct mp4 URL
             import tqdm
 
+            mp4_path = os.path.join(output_dir, filename + ".mp4")
             r = session.get(single_url, stream=True)
             total_size = int(r.headers.get("content-length", 0))
             block_size = 1024  # 1 kilobyte
             with tqdm.tqdm(total=total_size, unit="iB", unit_scale=True) as pbar:
-                with open(os.path.join(output_dir, filename + ".mp4"), "wb") as f:
+                with open(mp4_path, "wb") as f:
                     for data in r.iter_content(block_size):
                         pbar.update(len(data))
                         f.write(data)
+            if audio_only:
+                sys.stdout.write("  > Extracting audio to opus... ")
+                sys.stdout.flush()
+                opus_file = os.path.join(output_dir, filename + ".opus")
+                if self._convert_to_opus(mp4_path, opus_file):
+                    os.remove(mp4_path)
 
         print("Done!")
         print("-" * 60)
+        return True
+
+    @staticmethod
+    def _convert_to_opus(input_file, output_file):
+        """Convert any audio/video file to an Opus audio file."""
+        if os.path.exists(output_file):
+            os.remove(output_file)
+        try:
+            ff = ffmpy.FFmpeg(
+                global_options="-loglevel panic",
+                inputs={input_file: None},
+                outputs={output_file: ["-vn", "-c:a", "libopus", "-b:a", "64k"]},
+            )
+            ff.run()
+        except ffmpy.FFExecutableNotFoundError:
+            print('[WARN] Cannot convert to opus: "ffmpeg" not found. Keeping raw file.')
+            return False
+        except ffmpy.FFRuntimeError:
+            print("[Error] ffmpeg failed converting to opus.")
+            return False
+        print("Done!")
         return True
 
     @staticmethod

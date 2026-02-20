@@ -191,6 +191,7 @@ class EchoDownloader(object):
         webdriver_to_use="phantomjs",
         interactive_mode=False,
         persistent_session=False,
+        audio_only=False,
     ):
         self._course = course
         root_path = os.path.dirname(os.path.abspath(sys.modules["__main__"].__file__))
@@ -244,6 +245,7 @@ class EchoDownloader(object):
         )
 
         self.setup_credential = setup_credential
+        self.audio_only = audio_only
         # Monkey Patch, set the course's driver to the one from .downloader
         self._course.set_driver(self._driver)
         self._videos = []
@@ -399,7 +401,7 @@ class EchoDownloader(object):
                     "not contain any video.".format(filename)
                 )
             else:
-                if video.download(self._output_dir, filename):
+                if video.download(self._output_dir, filename, audio_only=self.audio_only):
                     downloaded_videos.insert(0, filename)
         print(self.success_msg(self._course.course_name, downloaded_videos))
         self._driver.close()
