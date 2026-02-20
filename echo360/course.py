@@ -212,6 +212,7 @@ class EchoCloudCourse(EchoCourse):
             )
             # use requests to retrieve data
             session = requests.Session()
+            session.headers.update({"Accept": "application/json"})
             # load cookies
             for cookie in self._driver.get_cookies():
                 session.cookies.set(cookie["name"], cookie["value"])
@@ -220,8 +221,19 @@ class EchoCloudCourse(EchoCourse):
             if not r.ok:
                 raise Exception("Error: Failed to get m3u8 info for EchoCourse!")
 
-            json_str = r.text
+            json_str = r.text.strip()
         except ValueError as e:
             raise Exception("Unable to retrieve JSON (course_data) from url", e)
+
+        # If requests returned empty/non-JSON (can happen with restored sessions),
+        # fall back to reading the page source from the webdriver directly.
+        if not json_str or not json_str.startswith("{"):
+            _LOGGER.debug("requests returned non-JSON, falling back to webdriver page source")
+            page = self._driver.page_source
+            # Chrome wraps JSON API responses in <html><body><pre>...</pre></body></html>
+            import re as _re
+            match = _re.search(r"<pre[^>]*>(.*)</pre>", page, _re.DOTALL)
+            json_str = match.group(1) if match else page
+
         self.course_data = json.loads(json_str)
         return self.course_data
