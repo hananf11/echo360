@@ -16,8 +16,9 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import StaleElementReferenceException
 
+import m3u8
+
 from .hls_downloader import Downloader
-from .naive_m3u8_parser import NaiveM3U8Parser
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -316,32 +317,36 @@ class EchoCloudVideo(EchoVideo):
                 print("Error: Failed to get m3u8 info. Skipping this video")
                 return False
 
-            lines = [n for n in r.content.decode().split("\n")]
+            _LOGGER.debug("Searching for m3u8 with content {}".format(r.content.decode()))
 
-            _LOGGER.debug("Searching for m3u8 with content {}".format(lines))
-
-            m3u8_parser = NaiveM3U8Parser(lines)
             try:
-                m3u8_parser.parse()
+                playlist = m3u8.loads(r.content.decode(), uri=single_url)
             except Exception as e:
                 _LOGGER.debug("Exception occurred while parsing m3u8: {}".format(e))
                 print("Failed to parse m3u8. Skipping...")
                 return False
 
-            m3u8_video, m3u8_audio = m3u8_parser.get_video_and_audio()
+            m3u8_video = None
+            m3u8_audio = None
+
+            for media in playlist.media:
+                if media.type == "AUDIO" and media.uri:
+                    m3u8_audio = media.absolute_uri
+                    break
+
+            if playlist.playlists:
+                m3u8_video = playlist.playlists[-1].absolute_uri
 
             if m3u8_video is None:  # even if audio is None it's okay, maybe audio is include with video
                 print("ERROR: Failed to find video m3u8... skipping this one")
                 return False
-
-            from .hls_downloader import urljoin
 
             if audio_only:
                 if m3u8_audio is not None:
                     # Separate audio stream exists — download only that
                     print("  > Downloading audio:")
                     raw_file = self._download_url_to_dir(
-                        urljoin(single_url, m3u8_audio),
+                        m3u8_audio,
                         output_dir,
                         filename + "_audio",
                         pool_size,
@@ -351,7 +356,7 @@ class EchoCloudVideo(EchoVideo):
                     # No separate audio stream; audio is muxed into video — download video and extract
                     print("  > Downloading video (for audio extraction):")
                     raw_file = self._download_url_to_dir(
-                        urljoin(single_url, m3u8_video),
+                        m3u8_video,
                         output_dir,
                         filename + "_video",
                         pool_size,
@@ -370,7 +375,7 @@ class EchoCloudVideo(EchoVideo):
                 if m3u8_audio is not None:
                     print("  > Downloading audio:")
                     audio_file = self._download_url_to_dir(
-                        urljoin(single_url, m3u8_audio),
+                        m3u8_audio,
                         output_dir,
                         filename + "_audio",
                         pool_size,
@@ -378,7 +383,7 @@ class EchoCloudVideo(EchoVideo):
                     )
                 print("  > Downloading video:")
                 video_file = self._download_url_to_dir(
-                    urljoin(single_url, m3u8_video),
+                    m3u8_video,
                     output_dir,
                     filename + "_video",
                     pool_size,

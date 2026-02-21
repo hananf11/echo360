@@ -6,43 +6,9 @@ import os, sys
 import tempfile
 import time
 import tqdm
+from urllib.parse import urljoin
 
 from .echo_exceptions import HlsDownloaderError
-
-
-def urljoin(a, b):
-    # get url relative root path
-    a = a[: a.rfind("/") + 1]
-    # remove slashes at beginning if needed
-    while b[0] == "/":
-        b = b[1:]
-    return a + b
-
-
-# update_progress() : Displays or updates a console progress bar
-## Accepts a float between 0 and 1. Any int will be converted to a float.
-## A value under 0 represents a 'halt'.
-## A value at 1 or bigger represents 100%
-def update_progress(current, total, title=None):
-    if title is None:
-        title = "Progress"
-    barLength = 20  # Modify this to change the length of the progress bar
-    status = " {}/{}".format(current, total)
-    progress = float(current) / float(total)
-    if progress < 0:
-        progress = 0
-        status = "Halt...\r\n"
-    if progress >= 1:
-        progress = 1
-        status += " Done!\r\n"
-    block = "=" * int(round(barLength * progress))
-    if len(block) < barLength:
-        block += ">"
-    text = "\r{0}: [{1}] {2:.2f}% {3}".format(
-        title, block + " " * (barLength - len(block)), progress * 100, status
-    )
-    sys.stdout.write(text)
-    sys.stdout.flush()
 
 
 class Downloader:
@@ -120,8 +86,14 @@ class Downloader:
                 if ts_list:
                     self.ts_total = len(ts_list)
                     self.ts_current = 0
+                    self._pbar = tqdm.tqdm(
+                        total=self.ts_total,
+                        desc="  > Progress",
+                        unit="seg",
+                    )
                     g1 = gevent.spawn(self._join_file)
                     self._download(ts_list)
+                    self._pbar.close()
                     g1.join()
         else:
             print("Failed status code: {}".format(r.status_code))
@@ -172,9 +144,6 @@ class Downloader:
         url = ts_tuple[0]
         index = ts_tuple[1]
         retry = self.retry
-        update_progress(
-            self.ts_current, self.ts_total, title="  > {}".format("Progress")
-        )
         while retry:
             try:
                 r = self.session.get(url, stream=True, timeout=20)
@@ -189,6 +158,7 @@ class Downloader:
                             f.write(data)
                 self.succed[index] = file_name
                 self.ts_current += 1
+                self._pbar.update(1)
                 return
             except EnvironmentError as e:
                 print("\r\nError in writing file: {}".format(e))
@@ -202,9 +172,6 @@ class Downloader:
         url = ts_tuple[0]
         index = ts_tuple[1]
         retry = self.retry
-        update_progress(
-            self.ts_current, self.ts_total, title="  > {}".format("Progress")
-        )
         while retry:
             try:
                 r = self.session.get(url, timeout=20)
@@ -214,11 +181,7 @@ class Downloader:
                         f.write(r.content)
                     self.succed[index] = file_name
                     self.ts_current += 1
-                    update_progress(
-                        self.ts_current,
-                        self.ts_total,
-                        title="  > {}".format("Progress"),
-                    )
+                    self._pbar.update(1)
                     return
             except EnvironmentError as e:
                 print("\r\nError in writing file: {}".format(e))

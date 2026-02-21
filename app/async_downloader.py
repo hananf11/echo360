@@ -4,58 +4,44 @@ import logging
 import os
 import tempfile
 from typing import Callable
-from urllib.parse import urlparse
 
 import httpx
-
-from echo360.naive_m3u8_parser import NaiveM3U8Parser
+import m3u8
 
 _LOGGER = logging.getLogger(__name__)
 _SEM = asyncio.Semaphore(30)
-
-
-def _urljoin(base: str, relative: str) -> str:
-    base = base[: base.rfind("/") + 1]
-    while relative.startswith("/"):
-        relative = relative[1:]
-    return base + relative
 
 
 async def resolve_audio_m3u8(client: httpx.AsyncClient, m3u8_url: str) -> list[str]:
     """Fetch a master M3U8, find the audio stream, return segment URLs."""
     r = await client.get(m3u8_url, timeout=20)
     r.raise_for_status()
-    lines = r.text.split("\n")
+    playlist = m3u8.loads(r.text, uri=m3u8_url)
 
-    parser = NaiveM3U8Parser(lines)
-    parser.parse()
-    m3u8_video, m3u8_audio = parser.get_video_and_audio()
-
-    audio_url = _urljoin(m3u8_url, m3u8_audio) if m3u8_audio else (
-        _urljoin(m3u8_url, m3u8_video) if m3u8_video else None
-    )
+    # Find audio media entry, or fall back to last variant playlist
+    audio_url = None
+    for media in playlist.media:
+        if media.type == "AUDIO" and media.uri:
+            audio_url = media.absolute_uri
+            break
+    if not audio_url and playlist.playlists:
+        audio_url = playlist.playlists[-1].absolute_uri
     if not audio_url:
         raise RuntimeError("No audio stream found in M3U8")
 
     # Fetch the segment-level playlist
     r = await client.get(audio_url, timeout=20)
     r.raise_for_status()
-    segments = [
-        _urljoin(audio_url, line.strip())
-        for line in r.text.split("\n")
-        if line.strip() and not line.startswith("#")
-    ]
-    # If we got a single sub-playlist instead of segments, resolve one more level
-    if len(segments) == 1 and not segments[0].split("?")[0].split(".")[-1] in ("ts", "mp4", "m4s"):
-        nested_url = segments[0]
+    seg_playlist = m3u8.loads(r.text, uri=audio_url)
+
+    # Handle nested playlists (another level of indirection)
+    if not seg_playlist.segments and seg_playlist.playlists:
+        nested_url = seg_playlist.playlists[0].absolute_uri
         r = await client.get(nested_url, timeout=20)
         r.raise_for_status()
-        segments = [
-            _urljoin(nested_url, line.strip())
-            for line in r.text.split("\n")
-            if line.strip() and not line.startswith("#")
-        ]
-    return segments
+        seg_playlist = m3u8.loads(r.text, uri=nested_url)
+
+    return [seg.absolute_uri for seg in seg_playlist.segments]
 
 
 async def download_segments(

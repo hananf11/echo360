@@ -152,8 +152,7 @@ async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id:
 def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None:
     """Blocking Chrome-based download. Runs in a thread executor."""
     from echo360.videos import EchoCloudVideo
-    from echo360.hls_downloader import Downloader, urljoin
-    from echo360.naive_m3u8_parser import NaiveM3U8Parser
+    from echo360.hls_downloader import Downloader
 
     video_json = json.loads(row["raw_json"])
     driver = None

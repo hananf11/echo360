@@ -54,7 +54,7 @@ main.py (argparse CLI)
         ├─> Selenium webdriver — handles auth (SSO) and page navigation
         ├─> EchoVideos / EchoVideo (videos.py) — extracts M3U8 URLs from video player
         └─> Downloader (hls_downloader.py) — parallel HLS segment downloads via gevent
-            ├─> NaiveM3U8Parser (naive_m3u8_parser.py) — parses M3U8 playlists
+            ├─> m3u8 lib — parses M3U8 playlists
             └─> ffmpy — optional transcoding of .ts segments to MP4
 ```
 
@@ -100,12 +100,16 @@ Open `http://localhost:8742`. Persistent data (SQLite DB + audio files) is store
 ```
 frontend/          React + Vite + TypeScript + Tailwind
 app/main.py        FastAPI — REST API + SSE + SPA serving
-app/db.py          SQLite schema (courses, lectures, jobs)
+app/models.py      SQLAlchemy ORM models (Course, Lecture, Transcript, Job)
+app/database.py    Engine, SessionLocal, get_db(), init_db() with Alembic auto-upgrade
 app/jobs.py        ThreadPoolExecutor job queue + SSE broadcast
 app/scraper.py     Selenium scraping wrapper (runs in worker threads)
+alembic/           Alembic migration scripts (SQLite batch mode)
 Dockerfile         Multi-stage build (node → python+chromium+ffmpeg)
 docker-compose.yml Named volume for data, bind-mount for session cookies
 ```
+
+**Database:** SQLAlchemy ORM with Alembic migrations. Models in `app/models.py`, engine/session in `app/database.py`. On startup, `init_db()` auto-detects existing databases and stamps them at the current migration. New migrations go in `alembic/versions/`. Use `render_as_batch=True` in env.py for SQLite compatibility.
 
 **SSE:** `/api/sse` streams `SSEMessage` JSON to the frontend for real-time status updates. Thread workers call `jobs.broadcast()` which uses `call_soon_threadsafe` to push into the asyncio loop.
 
@@ -126,5 +130,4 @@ docker-compose.yml Named volume for data, bind-mount for session cookies
 | `echo360/course.py` | `EchoCourse` / `EchoCloudCourse` — API wrappers |
 | `echo360/videos.py` | `EchoVideos` / `EchoVideo` — video URL extraction + audio-only download |
 | `echo360/hls_downloader.py` | HLS segment downloader with gevent |
-| `echo360/naive_m3u8_parser.py` | M3U8 playlist parser |
 | `echo360/binary_downloader/` | Webdriver binary management |
