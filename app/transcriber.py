@@ -4,7 +4,7 @@ import json
 from app import db, jobs
 
 
-def transcribe_lecture(lecture_id: int, model_name: str = "turbo") -> None:
+def transcribe_lecture(lecture_id: int, model_name: str = "tiny") -> None:
     with db.get_db() as conn:
         row = conn.execute(
             "SELECT * FROM lectures WHERE id = ?", [lecture_id]
@@ -30,7 +30,11 @@ def transcribe_lecture(lecture_id: int, model_name: str = "turbo") -> None:
         from faster_whisper import WhisperModel
 
         model = WhisperModel(model_name, device="auto", compute_type="int8")
-        segments_iter, _ = model.transcribe(row["audio_path"])
+        segments_iter, _ = model.transcribe(
+            row["audio_path"],
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500},
+        )
         segments = [
             {"start": s.start, "end": s.end, "text": s.text.strip()}
             for s in segments_iter

@@ -422,15 +422,45 @@ class EchoCloudVideo(EchoVideo):
         return True
 
     @staticmethod
+    def _probe_audio_codec(input_file):
+        """Return the audio codec name of the first audio stream, or None."""
+        import subprocess
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe", "-v", "quiet",
+                    "-select_streams", "a:0",
+                    "-show_entries", "stream=codec_name",
+                    "-of", "default=noprint_wrappers=1:nokey=1",
+                    input_file,
+                ],
+                capture_output=True, text=True, timeout=10,
+            )
+            return result.stdout.strip() or None
+        except Exception:
+            return None
+
+    @staticmethod
     def _convert_to_opus(input_file, output_file):
-        """Convert any audio/video file to an Opus audio file."""
+        """Remux or re-encode to an Opus audio file.
+
+        If the source already contains opus audio, remux with -c:a copy
+        (near-instant). Otherwise re-encode with libopus.
+        """
         if os.path.exists(output_file):
             os.remove(output_file)
+
+        codec = EchoCloudVideo._probe_audio_codec(input_file)
+        if codec == "opus":
+            audio_opts = ["-vn", "-c:a", "copy"]
+        else:
+            audio_opts = ["-vn", "-c:a", "libopus", "-b:a", "64k", "-threads", "0"]
+
         try:
             ff = ffmpy.FFmpeg(
                 global_options="-loglevel panic",
                 inputs={input_file: None},
-                outputs={output_file: ["-vn", "-c:a", "libopus", "-b:a", "64k"]},
+                outputs={output_file: audio_opts},
             )
             ff.run()
         except ffmpy.FFExecutableNotFoundError:

@@ -4,7 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Echo360 Videos Downloader — a CLI tool that downloads lecture videos from university Echo360 lecture recording systems and echo360.org/net cloud platforms using Selenium webdriver, HLS streaming downloads, and optional ffmpeg transcoding.
+Originally an Echo360 video downloader CLI, this project is being extended into an **AI-powered lecture notes tool**. The end goal is a local web app that: downloads audio from Echo360 lectures → transcribes with faster-whisper → generates structured Markdown notes via an LLM.
+
+See `plans/ai-lecture-notes.md` for the full 6-phase plan. Current status:
+- **Phase 1 (done):** Audio-only `.opus` download via CLI (`--audio-only`)
+- **Phase 2 (done):** FastAPI + React web UI — course library, lecture sync, download queue, Docker
+- **Phase 3 (pending):** Auto-transcription with faster-whisper after download
+- **Phase 4 (pending):** LLM note generation (Claude / OpenAI / Ollama backends)
+- **Phase 5 (future):** Frame extraction from video at key timestamps
 
 ## Setup & Running
 
@@ -72,7 +79,7 @@ A FastAPI + React web interface lives alongside the CLI.
 # Build frontend (output goes to app/static/)
 cd frontend && npm run build
 
-# Frontend dev server with hot-reload (proxies /api to :8000)
+# Frontend dev server with hot-reload (proxies /api to :8742)
 cd frontend && npm run dev
 ```
 
