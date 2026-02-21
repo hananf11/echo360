@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -130,7 +131,7 @@ def add_course(req: AddCourseRequest):
                 [url, section_id, hostname],
             )
             course_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except Exception:
+        except sqlite3.IntegrityError:
             raise HTTPException(409, "Course already added")
 
     jobs.submit(scraper.sync_course, course_id, url)
@@ -170,7 +171,7 @@ def discover_courses(req: AddCourseRequest):
                 course_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
             jobs.submit(scraper.sync_course, course_id, course_url)
             added += 1
-        except Exception:
+        except sqlite3.IntegrityError:
             skipped += 1
 
     return {"added": added, "skipped": skipped}

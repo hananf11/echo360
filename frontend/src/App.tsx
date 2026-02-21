@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ListOrdered } from 'lucide-react'
 import CourseLibrary from './components/CourseLibrary'
@@ -7,13 +7,14 @@ import QueuePanel from './components/QueuePanel'
 import type { SSEMessage } from './types'
 import { useSSE } from './hooks/useSSE'
 
+const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
+
 function AppContent() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [activeCount, setActiveCount] = useState(0)
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-    const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued'])
 
     if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
       if (msg.progress) {
@@ -48,9 +49,9 @@ function AppContent() {
   useSSE(handleSSE)
 
   // Initial load of active count
-  useState(() => {
+  useEffect(() => {
     fetch('/api/queue').then(r => r.json()).then((items: unknown[]) => setActiveCount(items.length)).catch(() => {})
-  })
+  }, [])
 
   return (
     <>

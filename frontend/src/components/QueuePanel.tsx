@@ -103,7 +103,6 @@ function QueueProgressBar({ progress }: { progress: NonNullable<SSEMessage['prog
   const colors = {
     download: 'bg-indigo-500',
     convert: 'bg-amber-500',
-    transcribe: 'bg-violet-500',
   }
 
   let label = ''

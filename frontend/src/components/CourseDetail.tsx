@@ -6,6 +6,8 @@ import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import LectureRow from './LectureRow'
 
+const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
+
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>()
   const courseId = Number(id)
@@ -27,7 +29,6 @@ export default function CourseDetail() {
   useEffect(() => { load() }, [load])
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-    const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
 
     if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
       if (msg.status !== undefined) {

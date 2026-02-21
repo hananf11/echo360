@@ -90,7 +90,6 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   const colors = {
     download: { bar: 'bg-indigo-500', track: 'bg-slate-600' },
     convert: { bar: 'bg-amber-500', track: 'bg-slate-600' },
-    transcribe: { bar: 'bg-violet-500', track: 'bg-slate-600' },
   }
   const { bar, track } = colors[stage]
 

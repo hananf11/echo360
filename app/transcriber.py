@@ -4,15 +4,12 @@ import json
 import logging
 import os
 import sys
-import time
 
 import httpx
 
 from app import db, jobs
 
 _LOGGER = logging.getLogger(__name__)
-
-_BROADCAST_INTERVAL = 0.5  # seconds
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
@@ -50,13 +47,13 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
         _bcast({"status": "transcribing"})
 
         if model_name == "cloud":
-            segments = await _transcribe_cloud(row["audio_path"], duration_seconds, _bcast)
+            segments = await _transcribe_cloud(row["audio_path"], _bcast)
         elif model_name.startswith("groq"):
-            segments = await _transcribe_groq(row["audio_path"], model_name, duration_seconds, _bcast)
+            segments = await _transcribe_groq(row["audio_path"], model_name, _bcast)
         elif model_name.startswith("modal"):
-            segments = await _transcribe_modal(row["audio_path"], duration_seconds, _bcast)
+            segments = await _transcribe_modal(row["audio_path"], _bcast)
         else:
-            segments = await _transcribe_local(row["audio_path"], model_name, duration_seconds, _bcast)
+            segments = await _transcribe_local(row["audio_path"], model_name)
 
         with db.get_db() as conn:
             conn.execute(
@@ -128,7 +125,7 @@ async def _split_audio(audio_path: str, max_size: int = GROQ_MAX_FILE_SIZE) -> l
     return chunks
 
 
-async def _transcribe_groq(audio_path: str, model_name: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_groq(audio_path: str, model_name: str, _bcast) -> list[dict]:
     """Transcribe via the Groq Whisper API, with automatic chunking for large files."""
     api_key = os.environ.get("GROQ_API_KEY")
     if not api_key:
@@ -142,22 +139,20 @@ async def _transcribe_groq(audio_path: str, model_name: str, duration_seconds: f
     file_size = os.path.getsize(audio_path)
     needs_chunking = file_size > GROQ_MAX_FILE_SIZE
 
-    _bcast({"status": "transcribing", "progress": {"done": 0, "total": round(duration_seconds, 1) if duration_seconds else 0, "stage": "transcribe"}})
-
     if needs_chunking:
         _LOGGER.info("Audio file is %.1f MB, splitting into chunks for Groq API", file_size / 1024 / 1024)
         chunks = await _split_audio(audio_path)
         try:
-            return await _transcribe_groq_chunked(chunks, groq_model, api_key, duration_seconds, _bcast)
+            return await _transcribe_groq_chunked(chunks, groq_model, api_key)
         finally:
             # Clean up temp chunk files
             import shutil
             shutil.rmtree(os.path.dirname(chunks[0]), ignore_errors=True)
     else:
-        return await _transcribe_groq_single(audio_path, groq_model, api_key, duration_seconds, _bcast)
+        return await _transcribe_groq_single(audio_path, groq_model, api_key)
 
 
-async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str) -> list[dict]:
     """Transcribe a single file via Groq API with retry for transient errors."""
     max_retries = 20  # generous limit to handle rate limiting waits
     for attempt in range(max_retries):
@@ -198,20 +193,17 @@ async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str
             "text": seg["text"].strip(),
         })
 
-    if duration_seconds:
-        _bcast({"status": "transcribing", "progress": {"done": round(duration_seconds, 1), "total": round(duration_seconds, 1), "stage": "transcribe"}})
-
     return segments
 
 
-async def _transcribe_groq_chunked(chunks: list[str], groq_model: str, api_key: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_groq_chunked(chunks: list[str], groq_model: str, api_key: str) -> list[dict]:
     """Transcribe multiple chunks sequentially via Groq, stitching timestamps."""
     all_segments = []
     time_offset = 0.0
 
     for i, chunk_path in enumerate(chunks):
         _LOGGER.info("Transcribing chunk %d/%d", i + 1, len(chunks))
-        chunk_segments = await _transcribe_groq_single(chunk_path, groq_model, api_key, duration_seconds, lambda _: None)
+        chunk_segments = await _transcribe_groq_single(chunk_path, groq_model, api_key)
 
         # Offset timestamps by the cumulative duration of previous chunks
         for seg in chunk_segments:
@@ -231,20 +223,14 @@ async def _transcribe_groq_chunked(chunks: list[str], groq_model: str, api_key: 
         chunk_duration = float(stdout.decode().strip())
         time_offset += chunk_duration
 
-        # Broadcast progress
-        if duration_seconds:
-            _bcast({"status": "transcribing", "progress": {"done": round(time_offset, 1), "total": round(duration_seconds, 1), "stage": "transcribe"}})
-
     return all_segments
 
 
-async def _transcribe_modal(audio_path: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_modal(audio_path: str, _bcast) -> list[dict]:
     """Transcribe via a self-hosted Modal serverless endpoint."""
     endpoint_url = os.environ.get("MODAL_WHISPER_URL")
     if not endpoint_url:
         raise RuntimeError("MODAL_WHISPER_URL environment variable is not set. Deploy modal_whisper.py first.")
-
-    _bcast({"status": "transcribing", "progress": {"done": 0, "total": round(duration_seconds, 1) if duration_seconds else 0, "stage": "transcribe"}})
 
     max_retries = 5
     for attempt in range(max_retries):
@@ -281,20 +267,17 @@ async def _transcribe_modal(audio_path: str, duration_seconds: float, _bcast) ->
             "text": seg["text"].strip(),
         })
 
-    if duration_seconds:
-        _bcast({"status": "transcribing", "progress": {"done": round(duration_seconds, 1), "total": round(duration_seconds, 1), "stage": "transcribe"}})
-
     return segments
 
 
-async def _transcribe_cloud(audio_path: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_cloud(audio_path: str, _bcast) -> list[dict]:
     """Cloud auto mode: try Groq first, fall back to Modal on rate limit or error."""
     groq_key = os.environ.get("GROQ_API_KEY")
     modal_url = os.environ.get("MODAL_WHISPER_URL")
 
     if groq_key:
         try:
-            return await _transcribe_groq(audio_path, "groq", duration_seconds, _bcast)
+            return await _transcribe_groq(audio_path, "groq", _bcast)
         except RuntimeError as e:
             err_msg = str(e)
             if "429" in err_msg or "rate" in err_msg.lower():
@@ -306,10 +289,10 @@ async def _transcribe_cloud(audio_path: str, duration_seconds: float, _bcast) ->
     elif not modal_url:
         raise RuntimeError("Cloud mode requires GROQ_API_KEY and/or MODAL_WHISPER_URL to be set")
 
-    return await _transcribe_modal(audio_path, duration_seconds, _bcast)
+    return await _transcribe_modal(audio_path, _bcast)
 
 
-async def _transcribe_local(audio_path: str, model_name: str, duration_seconds: float, _bcast) -> list[dict]:
+async def _transcribe_local(audio_path: str, model_name: str) -> list[dict]:
     """Transcribe locally via faster-whisper subprocess."""
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "app.transcribe_worker",
@@ -318,37 +301,9 @@ async def _transcribe_local(audio_path: str, model_name: str, duration_seconds: 
         stderr=asyncio.subprocess.PIPE,
     )
 
-    async def _collect_stdout():
-        assert proc.stdout is not None
-        return await proc.stdout.read()
-
-    async def _stream_stderr():
-        assert proc.stderr is not None
-        last_broadcast = 0.0
-        all_stderr = []
-        while True:
-            line = await proc.stderr.readline()
-            if not line:
-                break
-            text = line.decode().strip()
-            if text.startswith("PROGRESS:"):
-                try:
-                    done_secs = float(text.split(":", 1)[1])
-                    now = time.monotonic()
-                    if now - last_broadcast >= _BROADCAST_INTERVAL:
-                        last_broadcast = now
-                        progress = {"done": round(done_secs, 1), "total": round(duration_seconds, 1), "stage": "transcribe"} if duration_seconds else {"done": round(done_secs, 1), "total": 0, "stage": "transcribe"}
-                        _bcast({"status": "transcribing", "progress": progress})
-                except (ValueError, TypeError):
-                    pass
-            else:
-                all_stderr.append(text)
-        return "\n".join(all_stderr)
-
-    stdout_data, stderr_text = await asyncio.gather(_collect_stdout(), _stream_stderr())
-    await proc.wait()
+    stdout_data, stderr_data = await proc.communicate()
 
     if proc.returncode != 0:
-        raise RuntimeError(f"Transcription subprocess failed (rc={proc.returncode}): {stderr_text[:500]}")
+        raise RuntimeError(f"Transcription subprocess failed (rc={proc.returncode}): {stderr_data.decode()[:500]}")
 
     return json.loads(stdout_data.decode())

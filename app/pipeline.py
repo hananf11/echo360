@@ -9,7 +9,7 @@ import time
 import httpx
 
 from app import async_downloader, db, jobs
-from app.scraper import _build_driver, _build_session_from_cookies, _extract_stream_url, _load_session
+from app.scraper import _build_driver, _extract_stream_url, _load_session
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -90,7 +90,7 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
     if not raw_path:
         _LOGGER.info("Using Chrome fallback for lecture %d", lecture_id)
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             raw_path = await loop.run_in_executor(
                 jobs._blocking_executor,
                 _download_chrome_fallback, row, output_dir, filename,

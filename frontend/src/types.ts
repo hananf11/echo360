@@ -46,7 +46,7 @@ export interface SSEMessage {
   progress?: {
     done: number
     total: number
-    stage?: 'download' | 'convert' | 'transcribe'
+    stage?: 'download' | 'convert'
     speed_bps?: number
     eta_seconds?: number
   }
