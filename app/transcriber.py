@@ -6,6 +6,12 @@ import os
 import sys
 
 import httpx
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    before_sleep_log,
+)
 
 from app.database import get_db
 from app.models import Lecture, Transcript
@@ -15,6 +21,38 @@ _LOGGER = logging.getLogger(__name__)
 
 GROQ_API_URL = "https://api.groq.com/openai/v1/audio/transcriptions"
 GROQ_MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
+
+
+class _RetryableAPIError(Exception):
+    """Raised for transient API errors that should be retried."""
+    def __init__(self, status_code: int, retry_after: float | None = None, text: str = ""):
+        self.status_code = status_code
+        self.retry_after = retry_after
+        self.text = text
+        super().__init__(f"API error ({status_code}): {text[:200]}")
+
+
+def _groq_wait(retry_state) -> float:
+    """Custom wait: respect Retry-After on 429, exponential backoff on 5xx."""
+    exc = retry_state.outcome.exception()
+    if isinstance(exc, _RetryableAPIError):
+        if exc.status_code == 429:
+            return (int(exc.retry_after) + 5) if exc.retry_after else 60
+        return min(2 ** (retry_state.attempt_number - 1) * 5, 120)
+    return 5
+
+
+def _modal_wait(retry_state) -> float:
+    """Exponential backoff for Modal: 10s, 20s, 40s, 80s."""
+    return min(2 ** (retry_state.attempt_number - 1) * 10, 80)
+
+
+def _parse_segments(data: dict) -> list[dict]:
+    """Extract segment list from a Whisper API response."""
+    return [
+        {"start": seg["start"], "end": seg["end"], "text": seg["text"].strip()}
+        for seg in data.get("segments", [])
+    ]
 
 
 async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
@@ -149,48 +187,34 @@ async def _transcribe_groq(audio_path: str, model_name: str, _bcast) -> list[dic
         return await _transcribe_groq_single(audio_path, groq_model, api_key)
 
 
+@retry(
+    retry=retry_if_exception_type(_RetryableAPIError),
+    wait=_groq_wait,
+    stop=stop_after_attempt(20),
+    before_sleep=before_sleep_log(_LOGGER, logging.WARNING),
+    reraise=True,
+)
 async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str) -> list[dict]:
     """Transcribe a single file via Groq API with retry for transient errors."""
-    max_retries = 20  # generous limit to handle rate limiting waits
-    for attempt in range(max_retries):
-        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
-            with open(audio_path, "rb") as f:
-                resp = await client.post(
-                    GROQ_API_URL,
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    files={"file": (os.path.basename(audio_path), f, "audio/ogg")},
-                    data={
-                        "model": groq_model,
-                        "response_format": "verbose_json",
-                        "timestamp_granularities[]": "segment",
-                    },
-                )
+    async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
+        with open(audio_path, "rb") as f:
+            resp = await client.post(
+                GROQ_API_URL,
+                headers={"Authorization": f"Bearer {api_key}"},
+                files={"file": (os.path.basename(audio_path), f, "audio/ogg")},
+                data={
+                    "model": groq_model,
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "segment",
+                },
+            )
 
-        if resp.status_code == 200:
-            break
-        if resp.status_code == 429:
-            retry_after = resp.headers.get("retry-after")
-            wait = int(float(retry_after)) + 5 if retry_after else 60
-            _LOGGER.warning("Groq rate limited, waiting %ds before retry (Retry-After: %s)", wait, retry_after)
-            await asyncio.sleep(wait)
-            continue
-        if resp.status_code >= 500 and attempt < max_retries - 1:
-            wait = 2 ** attempt * 5  # 5s, 10s, 20s
-            _LOGGER.warning("Groq API returned %d, retrying in %ds (attempt %d/%d)", resp.status_code, wait, attempt + 1, max_retries)
-            await asyncio.sleep(wait)
-            continue
-        raise RuntimeError(f"Groq API error ({resp.status_code}): {resp.text[:500]}")
-
-    data = resp.json()
-    segments = []
-    for seg in data.get("segments", []):
-        segments.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip(),
-        })
-
-    return segments
+    if resp.status_code == 200:
+        return _parse_segments(resp.json())
+    if resp.status_code == 429 or resp.status_code >= 500:
+        retry_after = float(resp.headers["retry-after"]) if resp.headers.get("retry-after") else None
+        raise _RetryableAPIError(resp.status_code, retry_after, resp.text[:500])
+    raise RuntimeError(f"Groq API error ({resp.status_code}): {resp.text[:500]}")
 
 
 async def _transcribe_groq_chunked(chunks: list[str], groq_model: str, api_key: str) -> list[dict]:
@@ -229,42 +253,30 @@ async def _transcribe_modal(audio_path: str, _bcast) -> list[dict]:
     if not endpoint_url:
         raise RuntimeError("MODAL_WHISPER_URL environment variable is not set. Deploy modal_whisper.py first.")
 
-    max_retries = 5
-    for attempt in range(max_retries):
-        try:
-            async with httpx.AsyncClient(timeout=httpx.Timeout(900.0), follow_redirects=True) as client:
-                with open(audio_path, "rb") as f:
-                    resp = await client.post(
-                        endpoint_url,
-                        files={"file": (os.path.basename(audio_path), f, "audio/ogg")},
-                    )
-        except (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as e:
-            if attempt < max_retries - 1:
-                wait = 2 ** attempt * 10  # 10s, 20s, 40s, 80s
-                _LOGGER.warning("Modal connection error (%s), retrying in %ds (attempt %d/%d)", type(e).__name__, wait, attempt + 1, max_retries)
-                await asyncio.sleep(wait)
-                continue
-            raise RuntimeError(f"Modal endpoint connection failed after {max_retries} attempts: {e}")
+    return await _transcribe_modal_request(audio_path, endpoint_url)
 
-        if resp.status_code == 200:
-            break
-        if (resp.status_code == 303 or resp.status_code >= 500) and attempt < max_retries - 1:
-            wait = 2 ** attempt * 10
-            _LOGGER.warning("Modal endpoint returned %d, retrying in %ds (attempt %d/%d)", resp.status_code, wait, attempt + 1, max_retries)
-            await asyncio.sleep(wait)
-            continue
-        raise RuntimeError(f"Modal endpoint error ({resp.status_code}): {resp.text[:500]}")
 
-    data = resp.json()
-    segments = []
-    for seg in data.get("segments", []):
-        segments.append({
-            "start": seg["start"],
-            "end": seg["end"],
-            "text": seg["text"].strip(),
-        })
+@retry(
+    retry=retry_if_exception_type((_RetryableAPIError, httpx.ReadError, httpx.ConnectError, httpx.TimeoutException)),
+    wait=_modal_wait,
+    stop=stop_after_attempt(5),
+    before_sleep=before_sleep_log(_LOGGER, logging.WARNING),
+    reraise=True,
+)
+async def _transcribe_modal_request(audio_path: str, endpoint_url: str) -> list[dict]:
+    """Single Modal API call — retried by tenacity on transient errors."""
+    async with httpx.AsyncClient(timeout=httpx.Timeout(900.0), follow_redirects=True) as client:
+        with open(audio_path, "rb") as f:
+            resp = await client.post(
+                endpoint_url,
+                files={"file": (os.path.basename(audio_path), f, "audio/ogg")},
+            )
 
-    return segments
+    if resp.status_code == 200:
+        return _parse_segments(resp.json())
+    if resp.status_code == 303 or resp.status_code >= 500:
+        raise _RetryableAPIError(resp.status_code, text=resp.text[:500])
+    raise RuntimeError(f"Modal endpoint error ({resp.status_code}): {resp.text[:500]}")
 
 
 async def _transcribe_cloud(audio_path: str, _bcast) -> list[dict]:
