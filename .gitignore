@@ -63,3 +63,4 @@ _browser_persistent_session/
 .venv/
 frontend/node_modules/
 app/static/
+*.db
