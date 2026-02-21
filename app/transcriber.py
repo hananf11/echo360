@@ -7,7 +7,9 @@ import sys
 
 import httpx
 
-from app import db, jobs
+from app.database import get_db
+from app.models import Lecture, Transcript
+from app import jobs
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -16,64 +18,59 @@ GROQ_MAX_FILE_SIZE = 25 * 1024 * 1024  # 25 MB
 
 
 async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
-    with db.get_db() as conn:
-        row = conn.execute(
-            "SELECT l.*, l.course_id, l.duration_seconds FROM lectures l WHERE l.id = ?",
-            [lecture_id],
-        ).fetchone()
-
-    if not row:
-        return
-
-    if row["audio_status"] != "done" or not row["audio_path"]:
-        return
-
-    if row["transcript_status"] == "done":
-        return
-
-    course_id = row["course_id"]
-    duration_seconds = row["duration_seconds"]
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            return
+        if lec.audio_status != "done" or not lec.audio_path:
+            return
+        if lec.transcript_status == "done":
+            return
+        course_id = lec.course_id
+        audio_path = lec.audio_path
+        duration_seconds = lec.duration_seconds
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
 
     try:
-        with db.get_db() as conn:
-            conn.execute(
-                "UPDATE lectures SET transcript_status = 'transcribing', error_message = NULL WHERE id = ?",
-                [lecture_id],
-            )
+        with get_db() as session:
+            lec = session.get(Lecture, lecture_id)
+            if lec:
+                lec.transcript_status = "transcribing"
+                lec.error_message = None
         jobs.broadcast({"type": "transcription_start", "lecture_id": lecture_id})
         _bcast({"status": "transcribing"})
 
         if model_name == "cloud":
-            segments = await _transcribe_cloud(row["audio_path"], _bcast)
+            segments = await _transcribe_cloud(audio_path, _bcast)
         elif model_name.startswith("groq"):
-            segments = await _transcribe_groq(row["audio_path"], model_name, _bcast)
+            segments = await _transcribe_groq(audio_path, model_name, _bcast)
         elif model_name.startswith("modal"):
-            segments = await _transcribe_modal(row["audio_path"], _bcast)
+            segments = await _transcribe_modal(audio_path, _bcast)
         else:
-            segments = await _transcribe_local(row["audio_path"], model_name)
+            segments = await _transcribe_local(audio_path, model_name)
 
-        with db.get_db() as conn:
-            conn.execute(
-                "INSERT INTO transcripts (lecture_id, model, segments) VALUES (?, ?, ?)",
-                [lecture_id, model_name, json.dumps(segments)],
-            )
-            conn.execute(
-                "UPDATE lectures SET transcript_status = 'done', transcript_model = ? WHERE id = ?",
-                [model_name, lecture_id],
-            )
+        with get_db() as session:
+            session.add(Transcript(
+                lecture_id=lecture_id,
+                model=model_name,
+                segments=json.dumps(segments),
+            ))
+            lec = session.get(Lecture, lecture_id)
+            if lec:
+                lec.transcript_status = "done"
+                lec.transcript_model = model_name
 
         jobs.broadcast({"type": "transcription_done", "lecture_id": lecture_id})
 
     except Exception as e:
         _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
-        with db.get_db() as conn:
-            conn.execute(
-                "UPDATE lectures SET transcript_status = 'error', error_message = ? WHERE id = ?",
-                [str(e)[:500], lecture_id],
-            )
+        with get_db() as session:
+            lec = session.get(Lecture, lecture_id)
+            if lec:
+                lec.transcript_status = "error"
+                lec.error_message = str(e)[:500]
         jobs.broadcast(
             {"type": "transcription_error", "lecture_id": lecture_id, "error": str(e)}
         )

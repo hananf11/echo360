@@ -8,7 +8,9 @@ import time
 
 import httpx
 
-from app import async_downloader, db, jobs
+from app.database import get_db
+from app.models import Lecture
+from app import async_downloader, jobs
 from app.scraper import _build_driver, _extract_stream_url, _load_session
 
 _LOGGER = logging.getLogger(__name__)
@@ -33,31 +35,24 @@ def _safe_filename(row) -> str:
 
 
 def _set_status(lecture_id: int, status: str, **extra):
-    with db.get_db() as conn:
-        sets = ["audio_status = ?"]
-        vals = [status]
-        for k, v in extra.items():
-            sets.append(f"{k} = ?")
-            vals.append(v)
-        vals.append(lecture_id)
-        conn.execute(f"UPDATE lectures SET {', '.join(sets)} WHERE id = ?", vals)
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec:
+            lec.audio_status = status
+            for k, v in extra.items():
+                setattr(lec, k, v)
 
 
 async def run_download(lecture_id: int, output_dir: str) -> None:
     """Main download coroutine — download raw file, then enqueue conversion."""
-    with db.get_db() as conn:
-        row = conn.execute(
-            """
-            SELECT l.*, c.hostname, c.name AS course_name
-            FROM   lectures l
-            JOIN   courses  c ON l.course_id = c.id
-            WHERE  l.id = ?
-            """,
-            [lecture_id],
-        ).fetchone()
-
-    if row is None:
-        raise ValueError(f"Lecture {lecture_id} not found")
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec is None:
+            raise ValueError(f"Lecture {lecture_id} not found")
+        row = lec.to_dict()
+        # Also need hostname and course_name from the course
+        row["hostname"] = lec.course.hostname
+        row["course_name"] = lec.course.name
 
     course_id = row["course_id"]
 
@@ -272,10 +267,10 @@ async def _convert_to_opus(
 
 async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) -> None:
     """Convert raw file to .opus via async subprocess."""
-    with db.get_db() as conn:
-        row = conn.execute("SELECT course_id, duration_seconds FROM lectures WHERE id = ?", [lecture_id]).fetchone()
-    course_id = row["course_id"] if row else None
-    duration_seconds = row["duration_seconds"] if row else None
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        course_id = lec.course_id if lec else None
+        duration_seconds = lec.duration_seconds if lec else None
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})

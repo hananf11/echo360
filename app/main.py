@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 import re
-import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -10,9 +9,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sse_starlette.sse import EventSourceResponse
 
-from app import db, jobs, scraper
+from app.database import get_db, init_db
+from app.models import Course, Lecture, Transcript
+from app import jobs, scraper
 
 STATIC_DIR = Path(__file__).parent / "static"
 AUDIO_DIR = os.environ.get("ECHO360_AUDIO_DIR", os.path.expanduser("~/echo360-library"))
@@ -21,7 +24,7 @@ AUDIO_DIR = os.environ.get("ECHO360_AUDIO_DIR", os.path.expanduser("~/echo360-li
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     jobs.set_loop(asyncio.get_event_loop())
-    db.init_db()
+    init_db()
     await jobs.start_workers()
     # Recover lectures stuck in 'downloaded' — re-enqueue conversion
     _recover_downloaded()
@@ -33,14 +36,14 @@ async def lifespan(app: FastAPI):
 
 def _recover_downloaded():
     """Re-enqueue conversion for lectures stuck in 'downloaded' after restart."""
-    with db.get_db() as conn:
-        rows = conn.execute(
-            """
-            SELECT l.id, l.raw_path, l.date, l.title, c.name AS course_name
-            FROM lectures l JOIN courses c ON l.course_id = c.id
-            WHERE l.audio_status = 'downloaded' AND l.raw_path IS NOT NULL
-            """
-        ).fetchall()
+    with get_db() as session:
+        rows = session.execute(
+            text("""
+                SELECT l.id, l.raw_path, l.date, l.title, c.name AS course_name
+                FROM lectures l JOIN courses c ON l.course_id = c.id
+                WHERE l.audio_status = 'downloaded' AND l.raw_path IS NOT NULL
+            """)
+        ).mappings().all()
     for row in rows:
         if row["raw_path"] and os.path.exists(row["raw_path"]):
             course_dir = os.path.join(
@@ -75,8 +78,8 @@ def _cleanup_raw_files():
     if removed:
         logger.info("Cleanup: removed %d leftover raw files, freed %.2f GB", removed, freed / (1024**3))
     # Clear stale raw_path references in DB for completed lectures
-    with db.get_db() as conn:
-        conn.execute("UPDATE lectures SET raw_path = NULL WHERE audio_status = 'done' AND raw_path IS NOT NULL")
+    with get_db() as session:
+        session.execute(text("UPDATE lectures SET raw_path = NULL WHERE audio_status = 'done' AND raw_path IS NOT NULL"))
 
 
 app = FastAPI(lifespan=lifespan)
@@ -96,22 +99,22 @@ class TranscribeRequest(BaseModel):
 
 @app.get("/api/courses")
 def list_courses():
-    with db.get_db() as conn:
-        rows = conn.execute(
-            """
-            SELECT c.*, COUNT(l.id) AS lecture_count,
-                   MIN(substr(l.date, 1, 4)) AS year,
-                   SUM(CASE WHEN l.audio_status IN ('downloading', 'downloaded', 'converting') THEN 1 ELSE 0 END) AS downloading_count,
-                   SUM(CASE WHEN l.audio_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
-                   SUM(CASE WHEN l.audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded_count,
-                   SUM(CASE WHEN l.transcript_status = 'done' THEN 1 ELSE 0 END) AS transcribed_count,
-                   SUM(COALESCE(l.duration_seconds, 0)) AS total_duration_seconds
-            FROM   courses  c
-            LEFT JOIN lectures l ON l.course_id = c.id
-            GROUP BY c.id
-            ORDER BY c.name
-            """
-        ).fetchall()
+    with get_db() as session:
+        rows = session.execute(
+            text("""
+                SELECT c.*, COUNT(l.id) AS lecture_count,
+                       MIN(substr(l.date, 1, 4)) AS year,
+                       SUM(CASE WHEN l.audio_status IN ('downloading', 'downloaded', 'converting') THEN 1 ELSE 0 END) AS downloading_count,
+                       SUM(CASE WHEN l.audio_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+                       SUM(CASE WHEN l.audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded_count,
+                       SUM(CASE WHEN l.transcript_status = 'done' THEN 1 ELSE 0 END) AS transcribed_count,
+                       SUM(COALESCE(l.duration_seconds, 0)) AS total_duration_seconds
+                FROM   courses  c
+                LEFT JOIN lectures l ON l.course_id = c.id
+                GROUP BY c.id
+                ORDER BY c.name
+            """)
+        ).mappings().all()
     return [dict(r) for r in rows]
 
 
@@ -124,30 +127,29 @@ def add_course(req: AddCourseRequest):
     if not section_id:
         raise HTTPException(400, "Could not find a section UUID in the URL")
 
-    with db.get_db() as conn:
+    with get_db() as session:
         try:
-            conn.execute(
-                "INSERT INTO courses (url, section_id, hostname) VALUES (?, ?, ?)",
-                [url, section_id, hostname],
-            )
-            course_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-        except sqlite3.IntegrityError:
+            course = Course(url=url, section_id=section_id, hostname=hostname)
+            session.add(course)
+            session.flush()
+            course_id = course.id
+        except IntegrityError:
             raise HTTPException(409, "Course already added")
 
     jobs.submit(scraper.sync_course, course_id, url)
 
-    with db.get_db() as conn:
-        row = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
-    return dict(row)
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        return course.to_dict()
 
 
 @app.get("/api/courses/{course_id}")
 def get_course(course_id: int):
-    with db.get_db() as conn:
-        row = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
-    if not row:
+    with get_db() as session:
+        course = session.get(Course, course_id)
+    if not course:
         raise HTTPException(404, "Course not found")
-    return dict(row)
+    return course.to_dict()
 
 
 @app.post("/api/courses/discover")
@@ -163,15 +165,14 @@ def discover_courses(req: AddCourseRequest):
         section_id = scraper._extract_section_id(course_url)
         hostname = scraper._extract_hostname(course_url)
         try:
-            with db.get_db() as conn:
-                conn.execute(
-                    "INSERT INTO courses (url, section_id, hostname) VALUES (?, ?, ?)",
-                    [course_url, section_id, hostname],
-                )
-                course_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+            with get_db() as session:
+                course = Course(url=course_url, section_id=section_id, hostname=hostname)
+                session.add(course)
+                session.flush()
+                course_id = course.id
             jobs.submit(scraper.sync_course, course_id, course_url)
             added += 1
-        except sqlite3.IntegrityError:
+        except IntegrityError:
             skipped += 1
 
     return {"added": added, "skipped": skipped}
@@ -179,51 +180,56 @@ def discover_courses(req: AddCourseRequest):
 
 @app.post("/api/courses/{course_id}/sync")
 def sync_course(course_id: int):
-    with db.get_db() as conn:
-        row = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
-    if not row:
+    with get_db() as session:
+        course = session.get(Course, course_id)
+    if not course:
         raise HTTPException(404, "Course not found")
-    jobs.submit(scraper.sync_course, course_id, row["url"])
+    jobs.submit(scraper.sync_course, course_id, course.url)
     return {"status": "syncing"}
 
 
 @app.delete("/api/courses/{course_id}", status_code=204)
 def delete_course(course_id: int):
-    with db.get_db() as conn:
-        conn.execute("DELETE FROM courses WHERE id = ?", [course_id])
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if course:
+            session.delete(course)
 
 
 # ── Lectures ──────────────────────────────────────────────────────────────────
 
 @app.get("/api/courses/{course_id}/lectures")
 def list_lectures(course_id: int):
-    with db.get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM lectures WHERE course_id = ? ORDER BY date DESC",
-            [course_id],
-        ).fetchall()
-    return [dict(r) for r in rows]
+    with get_db() as session:
+        lectures = (
+            session.query(Lecture)
+            .filter(Lecture.course_id == course_id)
+            .order_by(Lecture.date.desc())
+            .all()
+        )
+    return [lec.to_dict() for lec in lectures]
 
 
 @app.post("/api/lectures/{lecture_id}/download")
 def download_lecture(lecture_id: int):
-    with db.get_db() as conn:
-        row = conn.execute(
-            "SELECT l.*, c.name AS course_name FROM lectures l JOIN courses c ON l.course_id = c.id WHERE l.id = ?",
-            [lecture_id],
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "Lecture not found")
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        row = lec.to_dict()
+        course_name = lec.course.name
 
     if row["audio_status"] not in ("pending", "error"):
         return {"status": row["audio_status"]}
 
-    with db.get_db() as conn:
-        conn.execute("UPDATE lectures SET audio_status = 'queued' WHERE id = ?", [lecture_id])
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec:
+            lec.audio_status = "queued"
     jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": row["course_id"], "status": "queued"})
 
     course_dir = os.path.join(
-        AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", row["course_name"])
+        AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
     )
     jobs.enqueue_download(lecture_id, course_dir)
     return {"status": "queued"}
@@ -231,42 +237,44 @@ def download_lecture(lecture_id: int):
 
 @app.post("/api/courses/{course_id}/download-all")
 def download_all(course_id: int):
-    with db.get_db() as conn:
-        course = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
-        lectures = conn.execute(
-            "SELECT * FROM lectures WHERE course_id = ? AND audio_status IN ('pending', 'error')",
-            [course_id],
-        ).fetchall()
-    if not course:
-        raise HTTPException(404, "Course not found")
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if not course:
+            raise HTTPException(404, "Course not found")
+        course_name = course.name
+        lectures = (
+            session.query(Lecture)
+            .filter(Lecture.course_id == course_id, Lecture.audio_status.in_(("pending", "error")))
+            .all()
+        )
+        lecture_data = [lec.to_dict() for lec in lectures]
 
-    lecture_ids = [lec["id"] for lec in lectures]
+    lecture_ids = [lec["id"] for lec in lecture_data]
     if lecture_ids:
-        with db.get_db() as conn:
-            conn.executemany(
-                "UPDATE lectures SET audio_status = 'queued' WHERE id = ?",
-                [(lid,) for lid in lecture_ids],
+        with get_db() as session:
+            session.query(Lecture).filter(Lecture.id.in_(lecture_ids)).update(
+                {"audio_status": "queued"}, synchronize_session=False
             )
         for lid in lecture_ids:
             jobs.broadcast({"type": "lecture_update", "lecture_id": lid, "course_id": course_id, "status": "queued"})
 
     course_dir = os.path.join(
-        AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course["name"])
+        AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
     )
-    for lec in lectures:
+    for lec in lecture_data:
         jobs.enqueue_download(lec["id"], course_dir)
-    return {"queued": len(lectures)}
+    return {"queued": len(lecture_data)}
 
 
 # ── Transcription ─────────────────────────────────────────────────────────────
 
 @app.get("/api/lectures/{lecture_id}/audio")
 def stream_audio(lecture_id: int, request: Request):
-    with db.get_db() as conn:
-        row = conn.execute("SELECT audio_path FROM lectures WHERE id = ?", [lecture_id]).fetchone()
-    if not row or not row["audio_path"]:
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+    if not lec or not lec.audio_path:
         raise HTTPException(404, "Audio not available")
-    path = row["audio_path"]
+    path = lec.audio_path
     if not os.path.exists(path):
         raise HTTPException(404, "Audio file not found on disk")
     return FileResponse(path, media_type="audio/ogg", headers={"Accept-Ranges": "bytes"})
@@ -274,18 +282,17 @@ def stream_audio(lecture_id: int, request: Request):
 
 @app.post("/api/lectures/{lecture_id}/transcribe")
 def transcribe_lecture(lecture_id: int, req: TranscribeRequest | None = None):
-    with db.get_db() as conn:
-        row = conn.execute("SELECT * FROM lectures WHERE id = ?", [lecture_id]).fetchone()
-    if not row:
-        raise HTTPException(404, "Lecture not found")
-    if row["audio_status"] != "done":
-        raise HTTPException(400, "Audio not downloaded yet")
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        if lec.audio_status != "done":
+            raise HTTPException(400, "Audio not downloaded yet")
 
-    with db.get_db() as conn:
-        conn.execute(
-            "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
-            [lecture_id],
-        )
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec:
+            lec.transcript_status = "queued"
     model = req.model if req else "groq"
     jobs.enqueue_transcribe(lecture_id, model)
     return {"status": "queued"}
@@ -293,42 +300,47 @@ def transcribe_lecture(lecture_id: int, req: TranscribeRequest | None = None):
 
 @app.get("/api/lectures/{lecture_id}/transcript")
 def get_transcript(lecture_id: int):
-    with db.get_db() as conn:
-        row = conn.execute(
-            "SELECT * FROM transcripts WHERE lecture_id = ? ORDER BY id DESC LIMIT 1",
-            [lecture_id],
-        ).fetchone()
-    if not row:
+    with get_db() as session:
+        transcript = (
+            session.query(Transcript)
+            .filter(Transcript.lecture_id == lecture_id)
+            .order_by(Transcript.id.desc())
+            .first()
+        )
+    if not transcript:
         raise HTTPException(404, "Transcript not found")
     return {
-        "model": row["model"],
-        "segments": json.loads(row["segments"]),
-        "created_at": row["created_at"],
+        "model": transcript.model,
+        "segments": json.loads(transcript.segments),
+        "created_at": transcript.created_at,
     }
 
 
 @app.post("/api/courses/{course_id}/transcribe-all")
 def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
-    with db.get_db() as conn:
-        course = conn.execute("SELECT * FROM courses WHERE id = ?", [course_id]).fetchone()
-        lectures = conn.execute(
-            """SELECT * FROM lectures WHERE course_id = ?
-               AND audio_status = 'done'
-               AND transcript_status IN ('pending', 'error')""",
-            [course_id],
-        ).fetchall()
-    if not course:
-        raise HTTPException(404, "Course not found")
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if not course:
+            raise HTTPException(404, "Course not found")
+        lectures = (
+            session.query(Lecture)
+            .filter(
+                Lecture.course_id == course_id,
+                Lecture.audio_status == "done",
+                Lecture.transcript_status.in_(("pending", "error")),
+            )
+            .all()
+        )
+        lecture_ids = [lec.id for lec in lectures]
 
     model = req.model if req else "modal"
-    for lec in lectures:
-        with db.get_db() as conn:
-            conn.execute(
-                "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
-                [lec["id"]],
-            )
-        jobs.enqueue_transcribe(lec["id"], model)
-    return {"queued": len(lectures)}
+    for lid in lecture_ids:
+        with get_db() as session:
+            lec = session.get(Lecture, lid)
+            if lec:
+                lec.transcript_status = "queued"
+        jobs.enqueue_transcribe(lid, model)
+    return {"queued": len(lecture_ids)}
 
 
 # ── Global transcribe-all ────────────────────────────────────────────────────
@@ -336,25 +348,28 @@ def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
 @app.post("/api/transcribe-all")
 def transcribe_all_global(req: TranscribeRequest | None = None):
     """Queue transcription for all done lectures with pending/error transcript across all courses."""
-    with db.get_db() as conn:
-        lectures = conn.execute(
-            """SELECT id FROM lectures
-               WHERE audio_status = 'done'
-               AND transcript_status IN ('pending', 'error')"""
-        ).fetchall()
+    with get_db() as session:
+        lectures = (
+            session.query(Lecture.id)
+            .filter(
+                Lecture.audio_status == "done",
+                Lecture.transcript_status.in_(("pending", "error")),
+            )
+            .all()
+        )
 
     if not lectures:
         return {"queued": 0}
 
+    lecture_ids = [lec.id for lec in lectures]
     model = req.model if req else "modal"
-    with db.get_db() as conn:
-        conn.executemany(
-            "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
-            [(lec["id"],) for lec in lectures],
+    with get_db() as session:
+        session.query(Lecture).filter(Lecture.id.in_(lecture_ids)).update(
+            {"transcript_status": "queued"}, synchronize_session=False
         )
-    for lec in lectures:
-        jobs.enqueue_transcribe(lec["id"], model)
-    return {"queued": len(lectures)}
+    for lid in lecture_ids:
+        jobs.enqueue_transcribe(lid, model)
+    return {"queued": len(lecture_ids)}
 
 
 # ── Global download-all ──────────────────────────────────────────────────────
@@ -362,33 +377,30 @@ def transcribe_all_global(req: TranscribeRequest | None = None):
 @app.post("/api/download-all")
 def download_all_global():
     """Queue downloads for all pending/error lectures across every course."""
-    with db.get_db() as conn:
-        lectures = conn.execute(
-            """
-            SELECT l.id, l.course_id, c.name AS course_name
-            FROM lectures l
-            JOIN courses c ON l.course_id = c.id
-            WHERE l.audio_status IN ('pending', 'error')
-            """
-        ).fetchall()
+    with get_db() as session:
+        lectures = (
+            session.query(Lecture.id, Lecture.course_id, Course.name.label("course_name"))
+            .join(Course, Lecture.course_id == Course.id)
+            .filter(Lecture.audio_status.in_(("pending", "error")))
+            .all()
+        )
 
     if not lectures:
         return {"queued": 0}
 
-    lecture_ids = [lec["id"] for lec in lectures]
-    with db.get_db() as conn:
-        conn.executemany(
-            "UPDATE lectures SET audio_status = 'queued' WHERE id = ?",
-            [(lid,) for lid in lecture_ids],
+    lecture_ids = [lec.id for lec in lectures]
+    with get_db() as session:
+        session.query(Lecture).filter(Lecture.id.in_(lecture_ids)).update(
+            {"audio_status": "queued"}, synchronize_session=False
         )
     for lec in lectures:
-        jobs.broadcast({"type": "lecture_update", "lecture_id": lec["id"], "course_id": lec["course_id"], "status": "queued"})
+        jobs.broadcast({"type": "lecture_update", "lecture_id": lec.id, "course_id": lec.course_id, "status": "queued"})
 
     for lec in lectures:
         course_dir = os.path.join(
-            AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", lec["course_name"])
+            AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", lec.course_name)
         )
-        jobs.enqueue_download(lec["id"], course_dir)
+        jobs.enqueue_download(lec.id, course_dir)
     return {"queued": len(lectures)}
 
 
@@ -408,10 +420,10 @@ def _dir_size(path: str) -> int:
 @app.get("/api/storage")
 def get_storage():
     size_bytes = _dir_size(AUDIO_DIR) if os.path.isdir(AUDIO_DIR) else 0
-    with db.get_db() as conn:
-        row = conn.execute(
-            "SELECT COUNT(*) AS total, SUM(CASE WHEN audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded FROM lectures"
-        ).fetchone()
+    with get_db() as session:
+        row = session.execute(
+            text("SELECT COUNT(*) AS total, SUM(CASE WHEN audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded FROM lectures")
+        ).mappings().one()
     return {
         "size_bytes": size_bytes,
         "total_lectures": row["total"],
@@ -424,27 +436,27 @@ def get_storage():
 @app.get("/api/queue")
 def get_queue():
     """Return all lectures with an active audio or transcript status."""
-    with db.get_db() as conn:
-        rows = conn.execute(
-            """
-            SELECT l.id, l.title, l.date, l.audio_status, l.transcript_status,
-                   l.course_id, c.name AS course_name, l.error_message
-            FROM lectures l
-            JOIN courses c ON l.course_id = c.id
-            WHERE l.audio_status NOT IN ('pending', 'done')
-               OR l.transcript_status NOT IN ('pending', 'done')
-            ORDER BY
-                CASE l.audio_status
-                    WHEN 'downloading' THEN 0
-                    WHEN 'converting'  THEN 1
-                    WHEN 'downloaded'  THEN 2
-                    WHEN 'queued'      THEN 3
-                    WHEN 'error'       THEN 4
-                    ELSE 5
-                END,
-                l.id
-            """
-        ).fetchall()
+    with get_db() as session:
+        rows = session.execute(
+            text("""
+                SELECT l.id, l.title, l.date, l.audio_status, l.transcript_status,
+                       l.course_id, c.name AS course_name, l.error_message
+                FROM lectures l
+                JOIN courses c ON l.course_id = c.id
+                WHERE l.audio_status NOT IN ('pending', 'done')
+                   OR l.transcript_status NOT IN ('pending', 'done')
+                ORDER BY
+                    CASE l.audio_status
+                        WHEN 'downloading' THEN 0
+                        WHEN 'converting'  THEN 1
+                        WHEN 'downloaded'  THEN 2
+                        WHEN 'queued'      THEN 3
+                        WHEN 'error'       THEN 4
+                        ELSE 5
+                    END,
+                    l.id
+            """)
+        ).mappings().all()
     return [dict(r) for r in rows]
 
 

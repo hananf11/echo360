@@ -166,9 +166,12 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
 
 def sync_course(course_id: int, course_url: str) -> None:
     """Fetch course metadata and populate the lectures table. Runs in a worker thread."""
-    from app.db import get_db
+    from app.database import get_db
+    from app.models import Course, Lecture
     from app import jobs
     from echo360.course import EchoCloudCourse
+    from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+    from datetime import datetime, timezone
 
     def _bcast(data: dict):
         jobs.broadcast({"course_id": course_id, **data})
@@ -192,28 +195,34 @@ def sync_course(course_id: int, course_url: str) -> None:
         course_data = course._get_course_data()
         course_name = course.course_name
 
-        with get_db() as conn:
-            conn.execute(
-                "UPDATE courses SET name = ?, last_synced_at = datetime('now') WHERE id = ?",
-                [course_name, course_id],
-            )
+        with get_db() as session:
+            c = session.get(Course, course_id)
+            if c:
+                c.name = course_name
+                c.last_synced_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         lectures = _parse_lectures(course_data)
 
-        with get_db() as conn:
+        with get_db() as session:
             for lec in lectures:
-                conn.execute(
-                    """
-                    INSERT INTO lectures (course_id, echo_id, title, date, raw_json, duration_seconds)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(course_id, echo_id) DO UPDATE SET
-                        title            = excluded.title,
-                        date             = excluded.date,
-                        raw_json         = excluded.raw_json,
-                        duration_seconds = excluded.duration_seconds
-                    """,
-                    [course_id, lec["echo_id"], lec["title"], lec["date"], lec["raw_json"], lec.get("duration_seconds")],
+                stmt = sqlite_insert(Lecture).values(
+                    course_id=course_id,
+                    echo_id=lec["echo_id"],
+                    title=lec["title"],
+                    date=lec["date"],
+                    raw_json=lec["raw_json"],
+                    duration_seconds=lec.get("duration_seconds"),
                 )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["course_id", "echo_id"],
+                    set_={
+                        "title": stmt.excluded.title,
+                        "date": stmt.excluded.date,
+                        "raw_json": stmt.excluded.raw_json,
+                        "duration_seconds": stmt.excluded.duration_seconds,
+                    },
+                )
+                session.execute(stmt)
 
         _bcast({"type": "sync_done", "course_name": course_name, "count": len(lectures)})
 

@@ -30,6 +30,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY echo360/ ./echo360/
 COPY app/ ./app/
+COPY alembic.ini ./
+COPY alembic/ ./alembic/
 
 # Copy built frontend assets from stage 1
 COPY --from=frontend-builder /build/app/static ./app/static/
