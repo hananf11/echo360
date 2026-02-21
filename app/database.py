@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine, event, inspect, text
+from sqlalchemy import create_engine, event, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base
@@ -79,18 +79,19 @@ def init_db() -> None:
         )
 
     # Recovery logic (same as before)
+    from app.models import Lecture
     with get_db() as session:
         # Reset queued → pending on restart
-        session.execute(
-            text("UPDATE lectures SET audio_status = 'pending' WHERE audio_status = 'queued'")
+        session.query(Lecture).filter(Lecture.audio_status == "queued").update(
+            {"audio_status": "pending"}, synchronize_session=False
         )
         _recover_downloading(session)
         _recover_converting(session)
-        session.execute(
-            text("UPDATE lectures SET transcript_status = 'pending' WHERE transcript_status IN ('queued', 'transcribing')")
+        session.query(Lecture).filter(Lecture.transcript_status.in_(("queued", "transcribing"))).update(
+            {"transcript_status": "pending"}, synchronize_session=False
         )
-        session.execute(
-            text("UPDATE lectures SET notes_status = 'pending' WHERE notes_status IN ('queued', 'generating')")
+        session.query(Lecture).filter(Lecture.notes_status.in_(("queued", "generating"))).update(
+            {"notes_status": "pending"}, synchronize_session=False
         )
         _backfill_durations(session)
 

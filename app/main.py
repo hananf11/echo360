@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlalchemy import text
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from sse_starlette.sse import EventSourceResponse
 
@@ -37,20 +37,20 @@ async def lifespan(app: FastAPI):
 def _recover_downloaded():
     """Re-enqueue conversion for lectures stuck in 'downloaded' after restart."""
     with get_db() as session:
-        rows = session.execute(
-            text("""
-                SELECT l.id, l.raw_path, l.date, l.title, c.name AS course_name
-                FROM lectures l JOIN courses c ON l.course_id = c.id
-                WHERE l.audio_status = 'downloaded' AND l.raw_path IS NOT NULL
-            """)
-        ).mappings().all()
-    for row in rows:
-        if row["raw_path"] and os.path.exists(row["raw_path"]):
+        lectures = (
+            session.query(Lecture)
+            .join(Course, Lecture.course_id == Course.id)
+            .filter(Lecture.audio_status == "downloaded", Lecture.raw_path.isnot(None))
+            .all()
+        )
+        rows = [(lec.id, lec.raw_path, lec.date, lec.title, lec.course.name) for lec in lectures]
+    for lid, raw_path, date, title, course_name in rows:
+        if raw_path and os.path.exists(raw_path):
             course_dir = os.path.join(
-                AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", row["course_name"])
+                AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
             )
-            filename = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
-            jobs.enqueue_convert(row["id"], row["raw_path"], course_dir, filename)
+            filename = re.sub(r'[\\/:*?"<>|]', "_", f"{date} - {title}")[:150]
+            jobs.enqueue_convert(lid, raw_path, course_dir, filename)
 
 
 def _cleanup_raw_files():
@@ -79,7 +79,9 @@ def _cleanup_raw_files():
         logger.info("Cleanup: removed %d leftover raw files, freed %.2f GB", removed, freed / (1024**3))
     # Clear stale raw_path references in DB for completed lectures
     with get_db() as session:
-        session.execute(text("UPDATE lectures SET raw_path = NULL WHERE audio_status = 'done' AND raw_path IS NOT NULL"))
+        session.query(Lecture).filter(
+            Lecture.audio_status == "done", Lecture.raw_path.isnot(None)
+        ).update({"raw_path": None}, synchronize_session=False)
 
 
 app = FastAPI(lifespan=lifespan)
@@ -104,24 +106,41 @@ class GenerateNotesRequest(BaseModel):
 @app.get("/api/courses")
 def list_courses():
     with get_db() as session:
-        rows = session.execute(
-            text("""
-                SELECT c.*, COUNT(l.id) AS lecture_count,
-                       MIN(substr(l.date, 1, 4)) AS year,
-                       SUM(CASE WHEN l.audio_status IN ('downloading', 'downloaded', 'converting') THEN 1 ELSE 0 END) AS downloading_count,
-                       SUM(CASE WHEN l.audio_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
-                       SUM(CASE WHEN l.audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded_count,
-                       SUM(CASE WHEN l.audio_status = 'no_media' THEN 1 ELSE 0 END) AS no_media_count,
-                       SUM(CASE WHEN l.transcript_status = 'done' THEN 1 ELSE 0 END) AS transcribed_count,
-                       SUM(CASE WHEN l.notes_status = 'done' THEN 1 ELSE 0 END) AS notes_count,
-                       SUM(COALESCE(l.duration_seconds, 0)) AS total_duration_seconds
-                FROM   courses  c
-                LEFT JOIN lectures l ON l.course_id = c.id
-                GROUP BY c.id
-                ORDER BY c.name
-            """)
-        ).mappings().all()
-    return [dict(r) for r in rows]
+        rows = (
+            session.query(
+                Course,
+                func.count(Lecture.id).label("lecture_count"),
+                func.min(func.substr(Lecture.date, 1, 4)).label("year"),
+                func.sum(case((Lecture.audio_status.in_(("downloading", "downloaded", "converting")), 1), else_=0)).label("downloading_count"),
+                func.sum(case((Lecture.audio_status == "queued", 1), else_=0)).label("queued_count"),
+                func.sum(case((Lecture.audio_status == "done", 1), else_=0)).label("downloaded_count"),
+                func.sum(case((Lecture.audio_status == "no_media", 1), else_=0)).label("no_media_count"),
+                func.sum(case((Lecture.transcript_status == "done", 1), else_=0)).label("transcribed_count"),
+                func.sum(case((Lecture.notes_status == "done", 1), else_=0)).label("notes_count"),
+                func.sum(func.coalesce(Lecture.duration_seconds, 0)).label("total_duration_seconds"),
+            )
+            .outerjoin(Lecture, Lecture.course_id == Course.id)
+            .group_by(Course.id)
+            .order_by(Course.name)
+            .all()
+        )
+    return [
+        {
+            **course.to_dict(),
+            "lecture_count": lecture_count,
+            "year": year,
+            "downloading_count": downloading_count,
+            "queued_count": queued_count,
+            "downloaded_count": downloaded_count,
+            "no_media_count": no_media_count,
+            "transcribed_count": transcribed_count,
+            "notes_count": notes_count,
+            "total_duration_seconds": total_duration_seconds,
+        }
+        for course, lecture_count, year, downloading_count, queued_count,
+            downloaded_count, no_media_count, transcribed_count, notes_count,
+            total_duration_seconds in rows
+    ]
 
 
 @app.post("/api/courses", status_code=201)
@@ -493,13 +512,12 @@ def _dir_size(path: str) -> int:
 def get_storage():
     size_bytes = _dir_size(AUDIO_DIR) if os.path.isdir(AUDIO_DIR) else 0
     with get_db() as session:
-        row = session.execute(
-            text("SELECT COUNT(*) AS total, SUM(CASE WHEN audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded FROM lectures")
-        ).mappings().one()
+        total = session.query(func.count(Lecture.id)).scalar()
+        downloaded = session.query(func.count(Lecture.id)).filter(Lecture.audio_status == "done").scalar()
     return {
         "size_bytes": size_bytes,
-        "total_lectures": row["total"],
-        "downloaded_lectures": row["downloaded"],
+        "total_lectures": total,
+        "downloaded_lectures": downloaded,
     }
 
 
@@ -508,29 +526,31 @@ def get_storage():
 @app.get("/api/queue")
 def get_queue():
     """Return all lectures with an active audio or transcript status."""
+    audio_order = case(
+        (Lecture.audio_status == "downloading", 0),
+        (Lecture.audio_status == "converting", 1),
+        (Lecture.audio_status == "downloaded", 2),
+        (Lecture.audio_status == "queued", 3),
+        (Lecture.audio_status == "error", 4),
+        else_=5,
+    )
     with get_db() as session:
-        rows = session.execute(
-            text("""
-                SELECT l.id, l.title, l.date, l.audio_status, l.transcript_status,
-                       l.notes_status, l.course_id, c.name AS course_name, l.error_message
-                FROM lectures l
-                JOIN courses c ON l.course_id = c.id
-                WHERE (l.audio_status NOT IN ('pending', 'done', 'no_media')
-                   OR l.transcript_status NOT IN ('pending', 'done')
-                   OR l.notes_status NOT IN ('pending', 'done'))
-                ORDER BY
-                    CASE l.audio_status
-                        WHEN 'downloading' THEN 0
-                        WHEN 'converting'  THEN 1
-                        WHEN 'downloaded'  THEN 2
-                        WHEN 'queued'      THEN 3
-                        WHEN 'error'       THEN 4
-                        ELSE 5
-                    END,
-                    l.id
-            """)
-        ).mappings().all()
-    return [dict(r) for r in rows]
+        rows = (
+            session.query(
+                Lecture.id, Lecture.title, Lecture.date,
+                Lecture.audio_status, Lecture.transcript_status, Lecture.notes_status,
+                Lecture.course_id, Course.name.label("course_name"), Lecture.error_message,
+            )
+            .join(Course, Lecture.course_id == Course.id)
+            .filter(
+                (Lecture.audio_status.notin_(("pending", "done", "no_media")))
+                | (Lecture.transcript_status.notin_(("pending", "done")))
+                | (Lecture.notes_status.notin_(("pending", "done")))
+            )
+            .order_by(audio_order, Lecture.id)
+            .all()
+        )
+    return [row._asdict() for row in rows]
 
 
 # ── SSE ───────────────────────────────────────────────────────────────────────
