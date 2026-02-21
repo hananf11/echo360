@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download, Mic } from 'lucide-react'
-import { getCourse, getLectures, downloadAll, transcribeAll } from '../api'
+import { ArrowLeft, Download, Mic, Sparkles } from 'lucide-react'
+import { getCourse, getLectures, downloadAll, transcribeAll, generateNotesAll } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import LectureRow from './LectureRow'
@@ -17,7 +17,9 @@ export default function CourseDetail() {
   const [loading, setLoading] = useState(true)
   const [queuedCount, setQueuedCount] = useState<number | null>(null)
   const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
+  const [notesQueuedCount, setNotesQueuedCount] = useState<number | null>(null)
   const [transcribeModel, setTranscribeModel] = useState('modal')
+  const [notesModel, setNotesModel] = useState('openrouter/meta-llama/llama-3.3-70b-instruct')
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
 
   const load = useCallback(() => {
@@ -95,6 +97,27 @@ export default function CourseDetail() {
         return next
       })
     }
+    if (msg.type === 'notes_start' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, notes_status: 'generating' } : l
+        )
+      )
+    }
+    if (msg.type === 'notes_done' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, notes_status: 'done' } : l
+        )
+      )
+    }
+    if (msg.type === 'notes_error' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, notes_status: 'error', error_message: msg.error || l.error_message } : l
+        )
+      )
+    }
   }, [])
 
   useSSE(handleSSE)
@@ -109,6 +132,11 @@ export default function CourseDetail() {
     setTranscribeQueuedCount(result.queued)
   }
 
+  const handleGenerateNotesAll = async () => {
+    const result = await generateNotesAll(courseId, notesModel)
+    setNotesQueuedCount(result.queued)
+  }
+
   const pendingCount = lectures.filter(
     l => l.audio_status === 'pending' || l.audio_status === 'error'
   ).length
@@ -119,6 +147,12 @@ export default function CourseDetail() {
     l =>
       l.audio_status === 'done' &&
       (l.transcript_status === 'pending' || l.transcript_status === 'error')
+  ).length
+  const notesReadyCount = lectures.filter(l => l.notes_status === 'done').length
+  const pendingNotesCount = lectures.filter(
+    l =>
+      l.transcript_status === 'done' &&
+      (l.notes_status === 'pending' || l.notes_status === 'error')
   ).length
 
   return (
@@ -139,11 +173,37 @@ export default function CourseDetail() {
             <div>
               <h1 className="text-2xl font-bold text-white leading-tight">{course?.name}</h1>
               <p className="text-slate-400 text-sm mt-1.5">
-                {lectures.length} lectures · {doneCount} downloaded{transcribedCount > 0 && ` · ${transcribedCount} transcribed`}
+                {lectures.length} lectures · {doneCount} downloaded{transcribedCount > 0 && ` · ${transcribedCount} transcribed`}{notesReadyCount > 0 && ` · ${notesReadyCount} notes`}
               </p>
             </div>
 
             <div className="flex items-center gap-2">
+              {pendingNotesCount > 0 && (
+                <>
+                  <select
+                    value={notesModel}
+                    onChange={e => setNotesModel(e.target.value)}
+                    className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-amber-500"
+                  >
+                    <optgroup label="OpenRouter">
+                      <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+                      <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
+                      <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
+                    </optgroup>
+                    <optgroup label="Direct">
+                      <option value="groq/llama-3.3-70b-versatile">Groq Llama 3.3</option>
+                      <option value="ollama/llama3">Ollama Llama 3</option>
+                    </optgroup>
+                  </select>
+                  <button
+                    onClick={handleGenerateNotesAll}
+                    className="flex items-center gap-2 bg-amber-700 hover:bg-amber-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                  >
+                    <Sparkles size={15} />
+                    Generate Notes ({pendingNotesCount})
+                  </button>
+                </>
+              )}
               {pendingTranscriptCount > 0 && (
                 <>
                   <select
@@ -194,6 +254,11 @@ export default function CourseDetail() {
               {transcribeQueuedCount} transcription{transcribeQueuedCount !== 1 ? 's' : ''} queued.
             </p>
           )}
+          {notesQueuedCount !== null && (
+            <p className="text-sm text-amber-400 mb-4">
+              {notesQueuedCount} note generation{notesQueuedCount !== 1 ? 's' : ''} queued.
+            </p>
+          )}
 
           {lectures.length === 0 ? (
             <p className="text-slate-500 text-sm py-8 text-center">
@@ -224,6 +289,7 @@ export default function CourseDetail() {
                             lecture={lecture}
                             isLast={i === sorted.length - 1}
                             transcribeModel={transcribeModel}
+                            notesModel={notesModel}
                             progress={progressMap[lecture.id]}
                           />
                         ))}

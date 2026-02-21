@@ -1,4 +1,4 @@
-import type { Course, Lecture, Transcript } from './types'
+import type { Course, Lecture, Note, Transcript } from './types'
 
 const BASE = '/api'
 
@@ -90,6 +90,23 @@ export const transcribeAll = (courseId: number, model = 'modal'): Promise<{ queu
 
 export const transcribeAllGlobal = (model = 'modal'): Promise<{ queued: number }> =>
   fetch(`${BASE}/transcribe-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).then(r => _json(r))
+
+export const generateNotes = (id: number, model: string): Promise<{ status: string }> =>
+  fetch(`${BASE}/lectures/${id}/generate-notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).then(r => _json(r))
+
+export const getNotes = (id: number): Promise<Note> =>
+  fetch(`${BASE}/lectures/${id}/notes`).then(r => _json(r))
+
+export const generateNotesAll = (courseId: number, model: string): Promise<{ queued: number }> =>
+  fetch(`${BASE}/courses/${courseId}/generate-notes-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),

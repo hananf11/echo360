@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { Download, CheckCircle, AlertCircle, Clock, Mic, Play, Pause } from 'lucide-react'
-import { downloadLecture, transcribeLecture } from '../api'
+import { Download, CheckCircle, AlertCircle, Clock, Mic, Play, Pause, Ban, Sparkles } from 'lucide-react'
+import { downloadLecture, transcribeLecture, generateNotes } from '../api'
 import type { Lecture, SSEMessage } from '../types'
 import LecturePlayer from './LecturePlayer'
 
@@ -39,6 +39,7 @@ interface Props {
   lecture: Lecture
   isLast: boolean
   transcribeModel?: string
+  notesModel?: string
   progress?: SSEMessage['progress']
 }
 
@@ -52,6 +53,7 @@ function AudioStatusIcon({ status }: { status: Lecture['audio_status'] }) {
   if (status === 'converting')
     return <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
   if (status === 'done') return <CheckCircle size={15} className="text-emerald-400" />
+  if (status === 'no_media') return <Ban size={15} className="text-slate-500" />
   return <AlertCircle size={15} className="text-red-400" />
 }
 
@@ -63,6 +65,22 @@ function TranscriptStatusIcon({ status }: { status: Lecture['transcript_status']
   return null
 }
 
+function NotesStatusIcon({ status }: { status: Lecture['notes_status'] }) {
+  if (status === 'queued' || status === 'generating')
+    return <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
+  if (status === 'done') return <CheckCircle size={15} className="text-amber-400" />
+  if (status === 'error') return <AlertCircle size={15} className="text-red-400" />
+  return null
+}
+
+const NOTES_STATUS_LABEL: Record<Lecture['notes_status'], string> = {
+  pending: '',
+  queued: 'Notes queued…',
+  generating: 'Generating notes…',
+  done: 'Notes',
+  error: 'Notes error',
+}
+
 const AUDIO_STATUS_LABEL: Record<Lecture['audio_status'], string> = {
   pending: '',
   queued: 'Queued…',
@@ -71,6 +89,7 @@ const AUDIO_STATUS_LABEL: Record<Lecture['audio_status'], string> = {
   converting: 'Converting…',
   done: 'Done',
   error: 'Error',
+  no_media: 'No media',
 }
 
 const TRANSCRIPT_STATUS_LABEL: Record<Lecture['transcript_status'], string> = {
@@ -118,11 +137,13 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   )
 }
 
-export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', progress }: Props) {
+export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', notesModel = 'openrouter/meta-llama/llama-3.3-70b-instruct', progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
   const transcriptLabel = TRANSCRIPT_STATUS_LABEL[lecture.transcript_status]
+  const notesLabel = NOTES_STATUS_LABEL[lecture.notes_status]
   const hasTranscript = lecture.transcript_status === 'done'
+  const hasNotes = lecture.notes_status === 'done'
   const canPlay = lecture.audio_status === 'done'
 
   const showProgress = progress && progress.total > 0
@@ -146,6 +167,25 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
         </td>
         <td className="px-5 py-3">
           <div className="flex items-center justify-end gap-2.5">
+
+            {/* Notes status */}
+            {notesLabel && (
+              <span className="text-xs text-slate-500" title={lecture.notes_status === 'error' && lecture.error_message ? lecture.error_message : undefined}>
+                {notesLabel}
+              </span>
+            )}
+            <NotesStatusIcon status={lecture.notes_status} />
+
+            {/* Generate notes button */}
+            {hasTranscript && (lecture.notes_status === 'pending' || lecture.notes_status === 'error') && (
+              <button
+                onClick={() => generateNotes(lecture.id, notesModel)}
+                className="p-1.5 rounded-lg bg-slate-700 hover:bg-amber-600 text-slate-400 hover:text-white transition-colors"
+                title="Generate notes"
+              >
+                <Sparkles size={13} />
+              </button>
+            )}
 
             {/* Transcript status */}
             {transcriptLabel && (
@@ -204,6 +244,7 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
         <LecturePlayer
           lectureId={lecture.id}
           hasTranscript={hasTranscript}
+          hasNotes={hasNotes}
           isLast={isLast}
         />
       )}

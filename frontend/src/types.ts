@@ -9,6 +9,7 @@ export interface Course {
   downloading_count: number
   queued_count: number
   downloaded_count: number
+  no_media_count: number
   transcribed_count: number
   year: string | null
   total_duration_seconds: number
@@ -21,9 +22,11 @@ export interface Lecture {
   title: string
   date: string
   audio_path: string | null
-  audio_status: 'pending' | 'queued' | 'downloading' | 'downloaded' | 'converting' | 'done' | 'error'
+  audio_status: 'pending' | 'queued' | 'downloading' | 'downloaded' | 'converting' | 'done' | 'error' | 'no_media'
   transcript_status: 'pending' | 'queued' | 'transcribing' | 'done' | 'error'
   transcript_model: string | null
+  notes_status: 'pending' | 'queued' | 'generating' | 'done' | 'error'
+  notes_model: string | null
   duration_seconds: number | null
   error_message: string | null
 }
@@ -31,6 +34,13 @@ export interface Lecture {
 export interface Transcript {
   model: string
   segments: { start: number; end: number; text: string }[]
+  created_at: string
+}
+
+export interface Note {
+  model: string
+  content_md: string
+  frame_timestamps: { time: number; reason: string }[]
   created_at: string
 }
 
