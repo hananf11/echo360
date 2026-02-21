@@ -12,14 +12,13 @@ _loop: asyncio.AbstractEventLoop | None = None
 _listeners: list[asyncio.Queue] = []
 _lock = threading.Lock()
 
-# Async download queue — processed by persistent worker tasks
-_download_queue: asyncio.Queue | None = None
-_worker_tasks: list[asyncio.Task] = []
+# Semaphore to cap concurrent downloads (async tasks, not threads)
+_download_sem: asyncio.Semaphore | None = None
+_transcribe_sem: asyncio.Semaphore | None = None
+_tasks: set[asyncio.Task] = set()
 
-# Thread pools for truly blocking work
+# Thread pool for Selenium (the only truly blocking work left)
 _blocking_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="echo360-blocking")
-_convert_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="echo360-convert")
-_transcribe_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="echo360-transcribe")
 
 
 def set_loop(loop: asyncio.AbstractEventLoop) -> None:
@@ -27,33 +26,12 @@ def set_loop(loop: asyncio.AbstractEventLoop) -> None:
     _loop = loop
 
 
-async def start_workers(num_download_workers: int = 3) -> None:
-    """Start persistent async download workers. Called from lifespan."""
-    global _download_queue
-    _download_queue = asyncio.Queue()
-    for i in range(num_download_workers):
-        task = asyncio.create_task(_download_worker(i))
-        _worker_tasks.append(task)
-    _LOGGER.info("Started %d download workers", num_download_workers)
-
-
-async def _download_worker(worker_id: int) -> None:
-    """Persistent worker that pulls from the download queue."""
-    from app import pipeline
-
-    while True:
-        try:
-            lecture_id, output_dir = await _download_queue.get()
-            try:
-                await pipeline.run_download(lecture_id, output_dir)
-            except Exception:
-                _LOGGER.exception("Download worker %d: failed lecture %d", worker_id, lecture_id)
-            finally:
-                _download_queue.task_done()
-        except asyncio.CancelledError:
-            break
-        except Exception:
-            _LOGGER.exception("Download worker %d: unexpected error", worker_id)
+async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_transcriptions: int = 2) -> None:
+    """Initialise concurrency semaphores. Called from lifespan."""
+    global _download_sem, _transcribe_sem
+    _download_sem = asyncio.Semaphore(max_concurrent_downloads)
+    _transcribe_sem = asyncio.Semaphore(max_concurrent_transcriptions)
+    _LOGGER.info("Download concurrency limit: %d, transcription limit: %d", max_concurrent_downloads, max_concurrent_transcriptions)
 
 
 def broadcast(data: dict) -> None:
@@ -82,19 +60,59 @@ async def listen() -> AsyncIterator[str]:
 
 
 def enqueue_download(lecture_id: int, output_dir: str) -> None:
-    """Add a download to the async queue."""
-    if _download_queue is not None and _loop is not None:
-        _loop.call_soon_threadsafe(_download_queue.put_nowait, (lecture_id, output_dir))
+    """Fire an async download task, gated by the concurrency semaphore."""
+    from app import pipeline
+
+    async def _run():
+        async with _download_sem:
+            try:
+                await pipeline.run_download(lecture_id, output_dir)
+            except Exception:
+                _LOGGER.exception("Download failed for lecture %d", lecture_id)
+
+    if _loop is not None and _download_sem is not None:
+        _schedule(_run())
 
 
 def enqueue_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) -> None:
-    """Submit a conversion job to the thread executor."""
+    """Schedule an async conversion task on the event loop."""
     from app import pipeline
-    _convert_executor.submit(pipeline.run_convert, lecture_id, raw_path, output_dir, filename)
+
+    async def _run():
+        try:
+            await pipeline.run_convert(lecture_id, raw_path, output_dir, filename)
+        except Exception:
+            _LOGGER.exception("Conversion failed for lecture %d", lecture_id)
+
+    _schedule(_run())
 
 
-def submit_transcribe(fn, *args, **kwargs):
-    return _transcribe_executor.submit(fn, *args, **kwargs)
+def enqueue_transcribe(lecture_id: int, model_name: str) -> None:
+    """Schedule an async transcription task, gated by the transcription semaphore."""
+    from app import transcriber
+
+    async def _run():
+        async with _transcribe_sem:
+            try:
+                await transcriber.transcribe_lecture(lecture_id, model_name)
+            except Exception:
+                _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
+
+    if _loop is not None and _transcribe_sem is not None:
+        _schedule(_run())
+
+
+def _schedule(coro) -> None:
+    """Schedule a coroutine as a fire-and-forget task on the event loop."""
+    if _loop is None:
+        return
+
+    def _create():
+        task = _loop.create_task(coro)
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+
+    _loop.call_soon_threadsafe(_create)
 
 
 def submit(fn, *args, **kwargs):
@@ -103,9 +121,7 @@ def submit(fn, *args, **kwargs):
 
 
 def shutdown() -> None:
-    for task in _worker_tasks:
+    for task in _tasks:
         task.cancel()
-    _worker_tasks.clear()
+    _tasks.clear()
     _blocking_executor.shutdown(wait=False, cancel_futures=True)
-    _convert_executor.shutdown(wait=False, cancel_futures=True)
-    _transcribe_executor.shutdown(wait=False, cancel_futures=True)

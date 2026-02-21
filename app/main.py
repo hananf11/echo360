@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
-from app import db, jobs, scraper, transcriber
+from app import db, jobs, scraper
 
 STATIC_DIR = Path(__file__).parent / "static"
 AUDIO_DIR = os.environ.get("ECHO360_AUDIO_DIR", os.path.expanduser("~/echo360-library"))
@@ -24,6 +24,8 @@ async def lifespan(app: FastAPI):
     await jobs.start_workers()
     # Recover lectures stuck in 'downloaded' — re-enqueue conversion
     _recover_downloaded()
+    # Remove leftover raw files from previous runs
+    _cleanup_raw_files()
     yield
     jobs.shutdown()
 
@@ -45,6 +47,35 @@ def _recover_downloaded():
             )
             filename = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
             jobs.enqueue_convert(row["id"], row["raw_path"], course_dir, filename)
+
+
+def _cleanup_raw_files():
+    """Remove leftover raw files (.mp4, .m4s, .ts) where .opus conversion already exists."""
+    import logging
+    logger = logging.getLogger(__name__)
+    removed, freed = 0, 0
+    if not os.path.isdir(AUDIO_DIR):
+        return
+    for dirpath, _, filenames in os.walk(AUDIO_DIR):
+        opus_stems = {os.path.splitext(f)[0] for f in filenames if f.endswith(".opus")}
+        for f in filenames:
+            stem, ext = os.path.splitext(f)
+            if ext.lower() in (".mp4", ".m4s", ".ts"):
+                # Check both exact stem and with _audio suffix stripped
+                base = stem.removesuffix("_audio")
+                if base in opus_stems or stem in opus_stems:
+                    raw_path = os.path.join(dirpath, f)
+                    try:
+                        freed += os.path.getsize(raw_path)
+                        os.remove(raw_path)
+                        removed += 1
+                    except OSError:
+                        pass
+    if removed:
+        logger.info("Cleanup: removed %d leftover raw files, freed %.2f GB", removed, freed / (1024**3))
+    # Clear stale raw_path references in DB for completed lectures
+    with db.get_db() as conn:
+        conn.execute("UPDATE lectures SET raw_path = NULL WHERE audio_status = 'done' AND raw_path IS NOT NULL")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -253,7 +284,7 @@ def transcribe_lecture(lecture_id: int, req: TranscribeRequest | None = None):
             [lecture_id],
         )
     model = req.model if req else "turbo"
-    jobs.submit_transcribe(transcriber.transcribe_lecture, lecture_id, model)
+    jobs.enqueue_transcribe(lecture_id, model)
     return {"status": "queued"}
 
 
@@ -293,7 +324,7 @@ def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
                 "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
                 [lec["id"]],
             )
-        jobs.submit_transcribe(transcriber.transcribe_lecture, lec["id"], model)
+        jobs.enqueue_transcribe(lec["id"], model)
     return {"queued": len(lectures)}
 
 

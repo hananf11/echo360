@@ -95,8 +95,8 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
     _set_status(lecture_id, "downloaded", raw_path=raw_path)
     _bcast({"status": "downloaded"})
 
-    # Enqueue conversion
-    jobs.enqueue_convert(lecture_id, raw_path, output_dir, filename)
+    # Run conversion inline (async subprocess, no thread needed)
+    await run_convert(lecture_id, raw_path, output_dir, filename)
 
 
 async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id: int, _bcast) -> str | None:
@@ -166,14 +166,57 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
                 pass
 
 
-def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) -> None:
-    """Convert raw file to .opus. Runs in a thread executor."""
-    from echo360.videos import EchoCloudVideo
+async def _probe_audio_codec(input_file: str) -> str | None:
+    """Async ffprobe to detect the audio codec."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "quiet",
+            "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            input_file,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        return stdout.decode().strip() or None
+    except Exception:
+        return None
+
+
+async def _convert_to_opus(input_file: str, output_file: str) -> bool:
+    """Async ffmpeg conversion to opus."""
+    if os.path.exists(output_file):
+        os.remove(output_file)
+
+    codec = await _probe_audio_codec(input_file)
+    if codec == "opus":
+        audio_opts = ["-vn", "-c:a", "copy"]
+    else:
+        audio_opts = ["-vn", "-c:a", "libopus", "-b:a", "48k", "-threads", "0"]
+
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-loglevel", "panic",
+        "-i", input_file,
+        *audio_opts,
+        output_file,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await proc.communicate()
+    if proc.returncode != 0:
+        _LOGGER.error("ffmpeg failed (rc=%d): %s", proc.returncode, stderr.decode()[:500])
+        return False
+    return os.path.exists(output_file)
+
+
+async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) -> None:
+    """Convert raw file to .opus via async subprocess."""
+    with db.get_db() as conn:
+        row = conn.execute("SELECT course_id FROM lectures WHERE id = ?", [lecture_id]).fetchone()
+    course_id = row["course_id"] if row else None
 
     def _bcast(data: dict):
-        with db.get_db() as conn:
-            row = conn.execute("SELECT course_id FROM lectures WHERE id = ?", [lecture_id]).fetchone()
-        course_id = row["course_id"] if row else None
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
 
     _set_status(lecture_id, "converting")
@@ -188,7 +231,7 @@ def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) 
             _bcast({"status": "done", "audio_path": raw_path})
             return
 
-        if EchoCloudVideo._convert_to_opus(raw_path, opus_path):
+        if await _convert_to_opus(raw_path, opus_path):
             try:
                 os.remove(raw_path)
             except OSError:

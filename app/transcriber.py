@@ -1,10 +1,15 @@
-"""Transcription worker using faster-whisper."""
+"""Async transcription — spawns faster-whisper as a subprocess."""
+import asyncio
 import json
+import logging
+import sys
 
 from app import db, jobs
 
+_LOGGER = logging.getLogger(__name__)
 
-def transcribe_lecture(lecture_id: int, model_name: str = "tiny") -> None:
+
+async def transcribe_lecture(lecture_id: int, model_name: str = "tiny") -> None:
     with db.get_db() as conn:
         row = conn.execute(
             "SELECT * FROM lectures WHERE id = ?", [lecture_id]
@@ -27,18 +32,18 @@ def transcribe_lecture(lecture_id: int, model_name: str = "tiny") -> None:
             )
         jobs.broadcast({"type": "transcription_start", "lecture_id": lecture_id})
 
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel(model_name, device="auto", compute_type="int8")
-        segments_iter, _ = model.transcribe(
-            row["audio_path"],
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500},
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "app.transcribe_worker",
+            row["audio_path"], model_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
-        segments = [
-            {"start": s.start, "end": s.end, "text": s.text.strip()}
-            for s in segments_iter
-        ]
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Transcription subprocess failed (rc={proc.returncode}): {stderr.decode()[:500]}")
+
+        segments = json.loads(stdout.decode())
 
         with db.get_db() as conn:
             conn.execute(
@@ -53,6 +58,7 @@ def transcribe_lecture(lecture_id: int, model_name: str = "tiny") -> None:
         jobs.broadcast({"type": "transcription_done", "lecture_id": lecture_id})
 
     except Exception as e:
+        _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
         with db.get_db() as conn:
             conn.execute(
                 "UPDATE lectures SET transcript_status = 'error' WHERE id = ?",

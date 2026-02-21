@@ -454,7 +454,7 @@ class EchoCloudVideo(EchoVideo):
         if codec == "opus":
             audio_opts = ["-vn", "-c:a", "copy"]
         else:
-            audio_opts = ["-vn", "-c:a", "libopus", "-b:a", "64k", "-threads", "0"]
+            audio_opts = ["-vn", "-c:a", "libopus", "-b:a", "48k", "-threads", "0"]
 
         try:
             ff = ffmpy.FFmpeg(
