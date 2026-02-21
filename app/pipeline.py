@@ -73,6 +73,15 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
     video_json = json.loads(row["raw_json"])
     stream_url = _extract_stream_url(video_json, row["hostname"])
 
+    # Early exit if lecture has no media at all
+    if not stream_url:
+        has_video = video_json.get("lesson", {}).get("hasVideo", False)
+        has_available = video_json.get("lesson", {}).get("hasAvailableVideo", False)
+        if not has_video or not has_available:
+            _set_status(lecture_id, "no_media", error_message="Lecture has no available media")
+            _bcast({"status": "no_media"})
+            return
+
     raw_path = None
 
     if stream_url:
@@ -178,6 +187,11 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
                 p = os.path.join(output_dir, f"raw_download.{ext}")
                 if os.path.exists(p):
                     return p
+        return None
+    except RuntimeError:
+        raise  # re-raise auth errors so outer handler reports them
+    except Exception:
+        _LOGGER.exception("Chrome fallback unexpected error for lecture")
         return None
     finally:
         if driver:

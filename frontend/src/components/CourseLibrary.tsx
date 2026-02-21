@@ -216,11 +216,11 @@ export default function CourseLibrary() {
                 </p>
                 {course.lecture_count > 0 && (
                   <div className="flex items-center gap-3 mt-1.5">
-                    <span className={`text-xs ${course.downloaded_count === course.lecture_count ? 'text-emerald-400' : 'text-slate-500'}`}>
-                      {course.downloaded_count}/{course.lecture_count} downloaded
+                    <span className={`text-xs ${course.downloaded_count + course.no_media_count >= course.lecture_count ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {course.downloaded_count}/{course.lecture_count - course.no_media_count} downloaded
                     </span>
-                    <span className={`text-xs ${course.transcribed_count === course.lecture_count ? 'text-violet-400' : 'text-slate-500'}`}>
-                      {course.transcribed_count}/{course.lecture_count} transcribed
+                    <span className={`text-xs ${course.transcribed_count + course.no_media_count >= course.lecture_count ? 'text-violet-400' : 'text-slate-500'}`}>
+                      {course.transcribed_count}/{course.lecture_count - course.no_media_count} transcribed
                     </span>
                   </div>
                 )}
