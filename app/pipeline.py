@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 
 import httpx
 
@@ -11,6 +12,20 @@ from app import async_downloader, db, jobs
 from app.scraper import _build_driver, _build_session_from_cookies, _extract_stream_url, _load_session
 
 _LOGGER = logging.getLogger(__name__)
+
+# Throttle progress broadcasts to ~2/sec per lecture
+_last_broadcast: dict[int, float] = {}
+_BROADCAST_INTERVAL = 0.5  # seconds
+
+
+def _throttled_progress(lecture_id: int, data: dict, _bcast) -> None:
+    """Broadcast progress at most every _BROADCAST_INTERVAL seconds per lecture."""
+    now = time.monotonic()
+    last = _last_broadcast.get(lecture_id, 0.0)
+    if now - last < _BROADCAST_INTERVAL:
+        return
+    _last_broadcast[lecture_id] = now
+    _bcast(data)
 
 
 def _safe_filename(row) -> str:
@@ -114,13 +129,20 @@ async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id:
         urls = stream_url if isinstance(stream_url, list) else [stream_url]
         single_url = urls[0]
 
+        dl_start = time.monotonic()
+
         def on_progress(done, total):
-            jobs.broadcast({
-                "type": "lecture_update",
-                "lecture_id": lecture_id,
-                "status": "downloading",
-                "progress": {"done": done, "total": total},
-            })
+            elapsed = time.monotonic() - dl_start
+            speed_bps = int(done / elapsed) if elapsed > 0 else 0
+            remaining = total - done
+            eta = remaining / speed_bps if speed_bps > 0 else None
+            progress = {
+                "done": done, "total": total, "stage": "download",
+                "speed_bps": speed_bps,
+            }
+            if eta is not None:
+                progress["eta_seconds"] = round(eta, 1)
+            _throttled_progress(lecture_id, {"status": "downloading", "progress": progress}, _bcast)
 
         if single_url.endswith(".m3u8"):
             segments = await async_downloader.resolve_audio_m3u8(client, single_url)
@@ -184,8 +206,13 @@ async def _probe_audio_codec(input_file: str) -> str | None:
         return None
 
 
-async def _convert_to_opus(input_file: str, output_file: str) -> bool:
-    """Async ffmpeg conversion to opus."""
+async def _convert_to_opus(
+    input_file: str,
+    output_file: str,
+    duration_seconds: float | None = None,
+    on_progress=None,
+) -> bool:
+    """Async ffmpeg conversion to opus with optional progress reporting."""
     if os.path.exists(output_file):
         os.remove(output_file)
 
@@ -195,17 +222,45 @@ async def _convert_to_opus(input_file: str, output_file: str) -> bool:
     else:
         audio_opts = ["-vn", "-c:a", "libopus", "-b:a", "48k", "-threads", "0"]
 
+    use_progress = duration_seconds is not None and duration_seconds > 0 and on_progress is not None
+
     proc = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-loglevel", "panic",
+        "ffmpeg", "-loglevel", "error",
+        *([ "-progress", "pipe:1", "-nostats"] if use_progress else []),
         "-i", input_file,
         *audio_opts,
         output_file,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr = await proc.communicate()
+
+    if use_progress:
+        async def _read_progress():
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode().strip()
+                if text.startswith("out_time_ms="):
+                    try:
+                        us = int(text.split("=", 1)[1])
+                        done_secs = us / 1_000_000
+                        on_progress(done_secs, duration_seconds)
+                    except (ValueError, ZeroDivisionError):
+                        pass
+
+        async def _read_stderr():
+            assert proc.stderr is not None
+            return await proc.stderr.read()
+
+        stderr_data, _ = await asyncio.gather(_read_stderr(), _read_progress())
+        await proc.wait()
+    else:
+        _, stderr_data = await proc.communicate()
+
     if proc.returncode != 0:
-        _LOGGER.error("ffmpeg failed (rc=%d): %s", proc.returncode, stderr.decode()[:500])
+        _LOGGER.error("ffmpeg failed (rc=%d): %s", proc.returncode, (stderr_data or b"").decode()[:500])
         return False
     return os.path.exists(output_file)
 
@@ -213,14 +268,25 @@ async def _convert_to_opus(input_file: str, output_file: str) -> bool:
 async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename: str) -> None:
     """Convert raw file to .opus via async subprocess."""
     with db.get_db() as conn:
-        row = conn.execute("SELECT course_id FROM lectures WHERE id = ?", [lecture_id]).fetchone()
+        row = conn.execute("SELECT course_id, duration_seconds FROM lectures WHERE id = ?", [lecture_id]).fetchone()
     course_id = row["course_id"] if row else None
+    duration_seconds = row["duration_seconds"] if row else None
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
 
     _set_status(lecture_id, "converting")
     _bcast({"status": "converting"})
+
+    def _on_convert_progress(done_secs, total_secs):
+        _throttled_progress(lecture_id, {
+            "status": "converting",
+            "progress": {
+                "done": round(done_secs, 1),
+                "total": round(total_secs, 1),
+                "stage": "convert",
+            },
+        }, _bcast)
 
     try:
         opus_path = os.path.join(output_dir, filename + ".opus")
@@ -231,7 +297,7 @@ async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename:
             _bcast({"status": "done", "audio_path": raw_path})
             return
 
-        if await _convert_to_opus(raw_path, opus_path):
+        if await _convert_to_opus(raw_path, opus_path, duration_seconds, _on_convert_progress):
             try:
                 os.remove(raw_path)
             except OSError:

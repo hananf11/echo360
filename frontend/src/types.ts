@@ -40,5 +40,11 @@ export interface SSEMessage {
   course_name?: string
   count?: number
   audio_path?: string | null
-  progress?: { done: number; total: number }
+  progress?: {
+    done: number
+    total: number
+    stage?: 'download' | 'convert' | 'transcribe'
+    speed_bps?: number
+    eta_seconds?: number
+  }
 }

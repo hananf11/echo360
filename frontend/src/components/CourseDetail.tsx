@@ -15,8 +15,8 @@ export default function CourseDetail() {
   const [loading, setLoading] = useState(true)
   const [queuedCount, setQueuedCount] = useState<number | null>(null)
   const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
-  const [transcribeModel, setTranscribeModel] = useState('tiny')
-  const [progressMap, setProgressMap] = useState<Record<number, { done: number; total: number }>>({})
+  const [transcribeModel, setTranscribeModel] = useState('groq')
+  const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -27,24 +27,33 @@ export default function CourseDetail() {
   useEffect(() => { load() }, [load])
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined && msg.status !== undefined) {
-      setLectures(prev =>
-        prev.map(l =>
-          l.id === msg.lecture_id
-            ? {
-                ...l,
-                audio_status: (msg.status as Lecture['audio_status']) ?? l.audio_status,
-                audio_path: msg.audio_path !== undefined ? msg.audio_path : l.audio_path,
-              }
-            : l
+    const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
+
+    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
+      if (msg.status !== undefined) {
+        setLectures(prev =>
+          prev.map(l => {
+            if (l.id !== msg.lecture_id) return l
+            const update: Partial<Lecture> = {}
+            // Audio statuses
+            if (['downloading', 'downloaded', 'converting', 'done', 'error', 'pending', 'queued'].includes(msg.status!)) {
+              update.audio_status = msg.status as Lecture['audio_status']
+            }
+            // Transcription status from lecture_update
+            if (msg.status === 'transcribing') {
+              update.transcript_status = 'transcribing'
+            }
+            if (msg.audio_path !== undefined) update.audio_path = msg.audio_path
+            return { ...l, ...update }
+          })
         )
-      )
-      // Track download progress
+      }
+      // Track progress for all active stages
       if (msg.progress && msg.lecture_id !== undefined) {
         setProgressMap(prev => ({ ...prev, [msg.lecture_id!]: msg.progress! }))
       }
-      // Clear progress when download phase ends
-      if (msg.status && msg.status !== 'downloading' && msg.lecture_id !== undefined) {
+      // Clear progress on terminal states
+      if (msg.status && TERMINAL_STATUSES.has(msg.status) && msg.lecture_id !== undefined) {
         setProgressMap(prev => {
           const next = { ...prev }
           delete next[msg.lecture_id!]
@@ -65,6 +74,11 @@ export default function CourseDetail() {
           l.id === msg.lecture_id ? { ...l, transcript_status: 'done' } : l
         )
       )
+      setProgressMap(prev => {
+        const next = { ...prev }
+        delete next[msg.lecture_id!]
+        return next
+      })
     }
     if (msg.type === 'transcription_error' && msg.lecture_id !== undefined) {
       setLectures(prev =>
@@ -72,6 +86,11 @@ export default function CourseDetail() {
           l.id === msg.lecture_id ? { ...l, transcript_status: 'error' } : l
         )
       )
+      setProgressMap(prev => {
+        const next = { ...prev }
+        delete next[msg.lecture_id!]
+        return next
+      })
     }
   }, [])
 
@@ -128,10 +147,15 @@ export default function CourseDetail() {
                     onChange={e => setTranscribeModel(e.target.value)}
                     className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
                   >
-                    <option value="tiny">tiny (fastest)</option>
-                    <option value="base">base (fast)</option>
-                    <option value="small">small (recommended)</option>
-                    <option value="turbo">turbo (best quality)</option>
+                    <optgroup label="Remote">
+                      <option value="groq">Groq cloud (fast)</option>
+                    </optgroup>
+                    <optgroup label="Local">
+                      <option value="tiny">tiny (fastest)</option>
+                      <option value="base">base</option>
+                      <option value="small">small</option>
+                      <option value="turbo">turbo (best quality)</option>
+                    </optgroup>
                   </select>
                   <button
                     onClick={handleTranscribeAll}

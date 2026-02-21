@@ -15,10 +15,10 @@ def main():
         vad_filter=True,
         vad_parameters={"min_silence_duration_ms": 500},
     )
-    segments = [
-        {"start": s.start, "end": s.end, "text": s.text.strip()}
-        for s in segments_iter
-    ]
+    segments = []
+    for s in segments_iter:
+        segments.append({"start": s.start, "end": s.end, "text": s.text.strip()})
+        print(f"PROGRESS:{s.end:.2f}", file=sys.stderr, flush=True)
     json.dump(segments, sys.stdout)
 
 

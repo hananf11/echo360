@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Download, CheckCircle, AlertCircle, Clock, Mic, Play, Pause } from 'lucide-react'
 import { downloadLecture, transcribeLecture } from '../api'
-import type { Lecture } from '../types'
+import type { Lecture, SSEMessage } from '../types'
 import LecturePlayer from './LecturePlayer'
 
 function formatDuration(seconds: number): string {
@@ -11,11 +11,35 @@ function formatDuration(seconds: number): string {
   return `${m}m`
 }
 
+function formatTimePair(done: number, total: number): string {
+  const fmt = (s: number) => {
+    const m = Math.floor(s / 60)
+    const sec = Math.floor(s % 60)
+    return `${m}m ${sec}s`
+  }
+  return `${fmt(done)} / ${fmt(total)}`
+}
+
+function formatSpeed(bps: number): string {
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} KB/s`
+  return `${bps} B/s`
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  if (m < 60) return `${m}m ${s}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
+}
+
 interface Props {
   lecture: Lecture
   isLast: boolean
   transcribeModel?: string
-  progress?: { done: number; total: number }
+  progress?: SSEMessage['progress']
 }
 
 function AudioStatusIcon({ status }: { status: Lecture['audio_status'] }) {
@@ -56,12 +80,52 @@ const TRANSCRIPT_STATUS_LABEL: Record<Lecture['transcript_status'], string> = {
   error: 'Transcript error',
 }
 
-export default function LectureRow({ lecture, isLast, transcribeModel = 'tiny', progress }: Props) {
+function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress']> }) {
+  if (!progress.total || progress.total <= 0) return null
+
+  const pct = Math.min(100, (progress.done / progress.total) * 100)
+  const stage = progress.stage ?? 'download'
+
+  const colors = {
+    download: { bar: 'bg-indigo-500', track: 'bg-slate-600' },
+    convert: { bar: 'bg-amber-500', track: 'bg-slate-600' },
+    transcribe: { bar: 'bg-violet-500', track: 'bg-slate-600' },
+  }
+  const { bar, track } = colors[stage]
+
+  let label = ''
+  if (stage === 'download') {
+    label = `${Math.round(pct)}%`
+    if (progress.speed_bps) label += ` · ${formatSpeed(progress.speed_bps)}`
+    if (progress.eta_seconds !== undefined) label += ` · ETA ${formatEta(progress.eta_seconds)}`
+  } else {
+    label = formatTimePair(progress.done, progress.total)
+  }
+
+  return (
+    <div className="mt-1">
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
+        <span>{label}</span>
+        <span>{Math.round(pct)}%</span>
+      </div>
+      <div className={`h-1 ${track} rounded-full overflow-hidden`}>
+        <div
+          className={`h-full ${bar} rounded-full transition-all duration-300`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
+export default function LectureRow({ lecture, isLast, transcribeModel = 'groq', progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
   const transcriptLabel = TRANSCRIPT_STATUS_LABEL[lecture.transcript_status]
   const hasTranscript = lecture.transcript_status === 'done'
   const canPlay = lecture.audio_status === 'done'
+
+  const showProgress = progress && progress.total > 0
 
   return (
     <>
@@ -73,7 +137,10 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'tiny', 
         <td className="px-5 py-3 text-sm text-slate-400 whitespace-nowrap font-mono">
           {lecture.date}
         </td>
-        <td className="px-5 py-3 text-sm text-slate-100">{lecture.title}</td>
+        <td className="px-5 py-3 text-sm text-slate-100">
+          <div>{lecture.title}</div>
+          {showProgress && <ProgressBar progress={progress} />}
+        </td>
         <td className="px-5 py-3 text-sm text-slate-500 whitespace-nowrap">
           {lecture.duration_seconds ? formatDuration(lecture.duration_seconds) : '—'}
         </td>
@@ -114,9 +181,7 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'tiny', 
 
             {/* Audio status */}
             <span className="text-xs text-slate-500">
-              {lecture.audio_status === 'downloading' && progress
-                ? `${progress.done}/${progress.total} segments`
-                : AUDIO_STATUS_LABEL[lecture.audio_status]}
+              {AUDIO_STATUS_LABEL[lecture.audio_status]}
             </span>
             <AudioStatusIcon status={lecture.audio_status} />
 

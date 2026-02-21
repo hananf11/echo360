@@ -64,3 +64,4 @@ _browser_persistent_session/
 frontend/node_modules/
 app/static/
 *.db
+.env

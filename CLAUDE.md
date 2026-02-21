@@ -116,6 +116,7 @@ docker-compose.yml Named volume for data, bind-mount for session cookies
 - `ECHO360_AUDIO_DIR` — audio output directory (default: `~/echo360-library`)
 - `CHROME_BIN` — Chromium binary path (set automatically in Docker)
 - `CHROMEDRIVER_PATH` — chromedriver path (set automatically in Docker)
+- `GROQ_API_KEY` — Groq API key for remote transcription (default model: `groq`/whisper-large-v3-turbo)
 
 ## Key Files
 

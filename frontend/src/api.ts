@@ -45,7 +45,7 @@ export const downloadLecture = (id: number): Promise<void> =>
 export const downloadAll = (courseId: number): Promise<{ queued: number }> =>
   fetch(`${BASE}/courses/${courseId}/download-all`, { method: 'POST' }).then(r => _json(r))
 
-export const transcribeLecture = (id: number, model = 'tiny'): Promise<{ status: string }> =>
+export const transcribeLecture = (id: number, model = 'groq'): Promise<{ status: string }> =>
   fetch(`${BASE}/lectures/${id}/transcribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -80,7 +80,7 @@ export interface StorageStats {
 export const getStorage = (): Promise<StorageStats> =>
   fetch(`${BASE}/storage`).then(r => _json(r))
 
-export const transcribeAll = (courseId: number, model = 'tiny'): Promise<{ queued: number }> =>
+export const transcribeAll = (courseId: number, model = 'groq'): Promise<{ queued: number }> =>
   fetch(`${BASE}/courses/${courseId}/transcribe-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

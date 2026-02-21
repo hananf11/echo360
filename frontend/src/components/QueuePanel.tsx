@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { X, Download, RefreshCw, Mic, AlertCircle, CheckCircle, Clock } from 'lucide-react'
 import { getQueue, type QueueItem } from '../api'
 import type { SSEMessage } from '../types'
@@ -50,6 +50,87 @@ function StatusBadge({ status }: { status: string }) {
   }
 }
 
+function ElapsedTimer({ startTime }: { startTime: number }) {
+  const [elapsed, setElapsed] = useState(0)
+  const intervalRef = useRef<ReturnType<typeof setInterval>>()
+
+  useEffect(() => {
+    const tick = () => setElapsed(Math.floor((Date.now() - startTime) / 1000))
+    tick()
+    intervalRef.current = setInterval(tick, 1000)
+    return () => clearInterval(intervalRef.current)
+  }, [startTime])
+
+  const m = Math.floor(elapsed / 60)
+  const s = elapsed % 60
+  return (
+    <span className="text-[10px] text-slate-500 tabular-nums">
+      {m}:{s.toString().padStart(2, '0')}
+    </span>
+  )
+}
+
+function formatSpeed(bps: number): string {
+  if (bps >= 1_000_000) return `${(bps / 1_000_000).toFixed(1)} MB/s`
+  if (bps >= 1_000) return `${(bps / 1_000).toFixed(0)} KB/s`
+  return `${bps} B/s`
+}
+
+function formatEta(seconds: number): string {
+  if (seconds < 60) return `${Math.round(seconds)}s`
+  const m = Math.floor(seconds / 60)
+  const s = Math.round(seconds % 60)
+  if (m < 60) return `${m}m ${s}s`
+  const h = Math.floor(m / 60)
+  return `${h}h ${m % 60}m`
+}
+
+function formatTimePair(done: number, total: number): string {
+  const fmt = (s: number) => {
+    const m = Math.floor(s / 60)
+    const sec = Math.floor(s % 60)
+    return `${m}m ${sec}s`
+  }
+  return `${fmt(done)} / ${fmt(total)}`
+}
+
+function QueueProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress']> }) {
+  if (!progress.total || progress.total <= 0) return null
+
+  const pct = Math.min(100, (progress.done / progress.total) * 100)
+  const stage = progress.stage ?? 'download'
+
+  const colors = {
+    download: 'bg-indigo-500',
+    convert: 'bg-amber-500',
+    transcribe: 'bg-violet-500',
+  }
+
+  let label = ''
+  if (stage === 'download') {
+    label = `${Math.round(pct)}%`
+    if (progress.speed_bps) label += ` · ${formatSpeed(progress.speed_bps)}`
+    if (progress.eta_seconds !== undefined) label += ` · ETA ${formatEta(progress.eta_seconds)}`
+  } else {
+    label = formatTimePair(progress.done, progress.total)
+  }
+
+  return (
+    <div className="mt-1.5">
+      <div className="flex items-center justify-between text-xs text-slate-500 mb-0.5">
+        <span>{label}</span>
+        <span>{Math.round(pct)}%</span>
+      </div>
+      <div className="h-1 bg-slate-600 rounded-full overflow-hidden">
+        <div
+          className={`h-full ${colors[stage]} rounded-full transition-all duration-300`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+    </div>
+  )
+}
+
 function activeStatus(item: QueueItem): string {
   // Show the most interesting non-idle status
   if (!['pending', 'done'].includes(item.audio_status)) return item.audio_status
@@ -57,14 +138,17 @@ function activeStatus(item: QueueItem): string {
   return item.audio_status
 }
 
+const ACTIVE_STATUSES = new Set(['downloading', 'converting', 'transcribing'])
+
 interface Props {
   open: boolean
   onClose: () => void
-  progressMap: Record<number, { done: number; total: number }>
+  progressMap: Record<number, SSEMessage['progress']>
 }
 
 export default function QueuePanel({ open, onClose, progressMap }: Props) {
   const [items, setItems] = useState<QueueItem[]>([])
+  const [startTimes, setStartTimes] = useState<Record<number, number>>({})
 
   const load = useCallback(() => {
     getQueue().then(setItems).catch(() => {})
@@ -78,6 +162,18 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
     if (msg.type === 'lecture_update' || msg.type === 'transcription_start' ||
         msg.type === 'transcription_done' || msg.type === 'transcription_error') {
       load()
+    }
+    // Track when items become active
+    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined && msg.status) {
+      if (ACTIVE_STATUSES.has(msg.status)) {
+        setStartTimes(prev => prev[msg.lecture_id!] ? prev : { ...prev, [msg.lecture_id!]: Date.now() })
+      } else {
+        setStartTimes(prev => {
+          const next = { ...prev }
+          delete next[msg.lecture_id!]
+          return next
+        })
+      }
     }
   }, [load])
 
@@ -125,28 +221,21 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
                     {section.items.map(item => {
                       const progress = progressMap[item.id]
                       const status = activeStatus(item)
+                      const started = startTimes[item.id]
                       return (
                         <div key={item.id} className="bg-slate-700/50 rounded-lg px-3 py-2">
                           <div className="flex items-center justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                              <p className="text-sm text-slate-200 truncate">{item.title}</p>
+                              <div className="flex items-center gap-2">
+                                <p className="text-sm text-slate-200 truncate">{item.title}</p>
+                                {ACTIVE_STATUSES.has(status) && started && <ElapsedTimer startTime={started} />}
+                              </div>
                               <p className="text-xs text-slate-500 truncate">{item.course_name}</p>
                             </div>
                             <StatusBadge status={status} />
                           </div>
-                          {status === 'downloading' && progress && (
-                            <div className="mt-1.5">
-                              <div className="flex items-center justify-between text-xs text-slate-500 mb-0.5">
-                                <span>{progress.done}/{progress.total} segments</span>
-                                <span>{Math.round((progress.done / progress.total) * 100)}%</span>
-                              </div>
-                              <div className="h-1 bg-slate-600 rounded-full overflow-hidden">
-                                <div
-                                  className="h-full bg-indigo-500 rounded-full transition-all duration-300"
-                                  style={{ width: `${(progress.done / progress.total) * 100}%` }}
-                                />
-                              </div>
-                            </div>
+                          {ACTIVE_STATUSES.has(status) && progress && (
+                            <QueueProgressBar progress={progress} />
                           )}
                         </div>
                       )

@@ -283,7 +283,7 @@ def transcribe_lecture(lecture_id: int, req: TranscribeRequest | None = None):
             "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
             [lecture_id],
         )
-    model = req.model if req else "turbo"
+    model = req.model if req else "groq"
     jobs.enqueue_transcribe(lecture_id, model)
     return {"status": "queued"}
 
@@ -317,7 +317,7 @@ def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
     if not course:
         raise HTTPException(404, "Course not found")
 
-    model = req.model if req else "tiny"
+    model = req.model if req else "groq"
     for lec in lectures:
         with db.get_db() as conn:
             conn.execute(
