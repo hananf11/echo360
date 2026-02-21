@@ -15,6 +15,8 @@ export default function CourseDetail() {
   const [loading, setLoading] = useState(true)
   const [queuedCount, setQueuedCount] = useState<number | null>(null)
   const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
+  const [transcribeModel, setTranscribeModel] = useState('tiny')
+  const [progressMap, setProgressMap] = useState<Record<number, { done: number; total: number }>>({})
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -25,7 +27,7 @@ export default function CourseDetail() {
   useEffect(() => { load() }, [load])
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
+    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined && msg.status !== undefined) {
       setLectures(prev =>
         prev.map(l =>
           l.id === msg.lecture_id
@@ -37,6 +39,18 @@ export default function CourseDetail() {
             : l
         )
       )
+      // Track download progress
+      if (msg.progress && msg.lecture_id !== undefined) {
+        setProgressMap(prev => ({ ...prev, [msg.lecture_id!]: msg.progress! }))
+      }
+      // Clear progress when download phase ends
+      if (msg.status && msg.status !== 'downloading' && msg.lecture_id !== undefined) {
+        setProgressMap(prev => {
+          const next = { ...prev }
+          delete next[msg.lecture_id!]
+          return next
+        })
+      }
     }
     if (msg.type === 'transcription_start' && msg.lecture_id !== undefined) {
       setLectures(prev =>
@@ -69,13 +83,14 @@ export default function CourseDetail() {
   }
 
   const handleTranscribeAll = async () => {
-    const result = await transcribeAll(courseId)
+    const result = await transcribeAll(courseId, transcribeModel)
     setTranscribeQueuedCount(result.queued)
   }
 
   const pendingCount = lectures.filter(
     l => l.audio_status === 'pending' || l.audio_status === 'error'
   ).length
+
   const doneCount = lectures.filter(l => l.audio_status === 'done').length
   const pendingTranscriptCount = lectures.filter(
     l =>
@@ -107,13 +122,25 @@ export default function CourseDetail() {
 
             <div className="flex items-center gap-2">
               {pendingTranscriptCount > 0 && (
-                <button
-                  onClick={handleTranscribeAll}
-                  className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
-                >
-                  <Mic size={15} />
-                  Transcribe All ({pendingTranscriptCount})
-                </button>
+                <>
+                  <select
+                    value={transcribeModel}
+                    onChange={e => setTranscribeModel(e.target.value)}
+                    className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
+                  >
+                    <option value="tiny">tiny (fastest)</option>
+                    <option value="base">base (fast)</option>
+                    <option value="small">small (recommended)</option>
+                    <option value="turbo">turbo (best quality)</option>
+                  </select>
+                  <button
+                    onClick={handleTranscribeAll}
+                    className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                  >
+                    <Mic size={15} />
+                    Transcribe All ({pendingTranscriptCount})
+                  </button>
+                </>
               )}
               {pendingCount > 0 && (
                 <button
@@ -152,24 +179,29 @@ export default function CourseDetail() {
                 }, {})
               )
                 .sort(([a], [b]) => b.localeCompare(a))
-                .map(([year, group]) => (
+                .map(([year, group]) => {
+                  const sorted = [...group].sort((a, b) => b.date.localeCompare(a.date))
+                  return (
                   <div key={year} className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
                     <div className="px-5 py-2.5 border-b border-slate-700 bg-slate-700/40">
                       <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{year}</span>
                     </div>
                     <table className="w-full">
                       <tbody>
-                        {group.map((lecture, i) => (
+                        {sorted.map((lecture, i) => (
                           <LectureRow
                             key={lecture.id}
                             lecture={lecture}
-                            isLast={i === group.length - 1}
+                            isLast={i === sorted.length - 1}
+                            transcribeModel={transcribeModel}
+                            progress={progressMap[lecture.id]}
                           />
                         ))}
                       </tbody>
                     </table>
                   </div>
-                ))}
+                  )
+                })}
             </div>
           )}
         </>

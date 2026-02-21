@@ -204,14 +204,15 @@ def sync_course(course_id: int, course_url: str) -> None:
             for lec in lectures:
                 conn.execute(
                     """
-                    INSERT INTO lectures (course_id, echo_id, title, date, raw_json)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO lectures (course_id, echo_id, title, date, raw_json, duration_seconds)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT(course_id, echo_id) DO UPDATE SET
-                        title    = excluded.title,
-                        date     = excluded.date,
-                        raw_json = excluded.raw_json
+                        title            = excluded.title,
+                        date             = excluded.date,
+                        raw_json         = excluded.raw_json,
+                        duration_seconds = excluded.duration_seconds
                     """,
-                    [course_id, lec["echo_id"], lec["title"], lec["date"], lec["raw_json"]],
+                    [course_id, lec["echo_id"], lec["title"], lec["date"], lec["raw_json"], lec.get("duration_seconds")],
                 )
 
         _bcast({"type": "sync_done", "course_name": course_name, "count": len(lectures)})
@@ -261,12 +262,44 @@ def _parse_single(v: dict, group_prefix: str = "") -> dict | None:
         elif lesson.get("createdAt"):
             date = lesson["createdAt"][:10]
 
-        return {"echo_id": echo_id, "title": title, "date": date, "raw_json": json.dumps(v)}
+        duration_seconds = _compute_duration(v)
+
+        return {"echo_id": echo_id, "title": title, "date": date, "raw_json": json.dumps(v), "duration_seconds": duration_seconds}
     except (KeyError, TypeError):
         return None
 
 
-# ── Lecture download ──────────────────────────────────────────────────────────
+def _compute_duration(v: dict) -> int | None:
+    """Compute lecture duration in seconds from start/end timestamps."""
+    from datetime import datetime
+    try:
+        start = v["lesson"].get("startTimeUTC")
+        end = v["lesson"].get("endTimeUTC")
+        if start and end:
+            fmt = "%Y-%m-%dT%H:%M:%S.%fZ"
+            dt_start = datetime.strptime(start, fmt)
+            dt_end = datetime.strptime(end, fmt)
+            secs = int((dt_end - dt_start).total_seconds())
+            if secs > 0:
+                return secs
+    except (ValueError, TypeError):
+        pass
+    # Fallback: try timing object
+    try:
+        timing = v["lesson"]["lesson"].get("timing", {})
+        if timing.get("start") and timing.get("end"):
+            fmt = "%Y-%m-%dT%H:%M:%S.%f"
+            dt_start = datetime.strptime(timing["start"], fmt)
+            dt_end = datetime.strptime(timing["end"], fmt)
+            secs = int((dt_end - dt_start).total_seconds())
+            if secs > 0:
+                return secs
+    except (ValueError, TypeError):
+        pass
+    return None
+
+
+# ── Stream URL extraction ─────────────────────────────────────────────────────
 
 def _extract_stream_url(video_json: dict, hostname: str):
     """Extract stream URL from raw lesson JSON without launching Chrome.
@@ -314,167 +347,3 @@ def _build_session_from_cookies() -> "requests.Session":
         for c in cookies:
             session.cookies.set(c["name"], c["value"])
     return session
-
-
-def _download_audio_direct(session, stream_url, output_dir: str, filename: str) -> str | None:
-    """Download audio to opus without Chrome. Returns opus path or None on failure."""
-    from echo360.hls_downloader import Downloader, urljoin
-    from echo360.naive_m3u8_parser import NaiveM3U8Parser
-    from echo360.videos import EchoCloudVideo
-
-    urls = stream_url if isinstance(stream_url, list) else [stream_url]
-    single_url = urls[0]
-
-    # Convert session cookies to the format Downloader expects
-    selenium_cookies = [{"name": k, "value": v} for k, v in session.cookies.items()]
-
-    if single_url.endswith(".m3u8"):
-        r = session.get(single_url, timeout=20)
-        if not r.ok:
-            _LOGGER.error("Failed to fetch m3u8: %s", r.status_code)
-            return None
-
-        lines = r.content.decode().split("\n")
-        parser = NaiveM3U8Parser(lines)
-        try:
-            parser.parse()
-        except Exception as e:
-            _LOGGER.error("Failed to parse m3u8: %s", e)
-            return None
-
-        m3u8_video, m3u8_audio = parser.get_video_and_audio()
-        audio_m3u8 = urljoin(single_url, m3u8_audio) if m3u8_audio else (
-            urljoin(single_url, m3u8_video) if m3u8_video else None
-        )
-        if not audio_m3u8:
-            _LOGGER.error("No audio or video stream found in m3u8")
-            return None
-
-        downloader = Downloader(50, selenium_cookies=selenium_cookies)
-        downloader.run(audio_m3u8, output_dir, convert_to_mp4=False)
-        raw_file = downloader.result_file_name
-    else:
-        # Direct file URL (MP4, ts, etc.) — stream-download it
-        ext = single_url.split("?")[0].split(".")[-1]
-        raw_file = os.path.join(output_dir, f"{filename}_raw.{ext}")
-        r = session.get(single_url, stream=True, timeout=30)
-        if not r.ok:
-            _LOGGER.error("Failed to download direct URL: %s", r.status_code)
-            return None
-        with open(raw_file, "wb") as f:
-            for chunk in r.iter_content(65536):
-                f.write(chunk)
-
-    opus_file = os.path.join(output_dir, filename + ".opus")
-    if EchoCloudVideo._convert_to_opus(raw_file, opus_file):
-        try:
-            os.remove(raw_file)
-        except OSError:
-            pass
-        return opus_file
-
-    return None
-
-
-def download_lecture(lecture_id: int, output_dir: str) -> None:
-    """Download audio for a single lecture. Runs in a worker thread."""
-    from app.db import get_db
-    from app import jobs
-
-    row = None
-
-    def _bcast(data: dict):
-        jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": row["course_id"] if row else None, **data})
-
-    with get_db() as conn:
-        row = conn.execute(
-            """
-            SELECT l.*, c.hostname, c.name AS course_name
-            FROM   lectures l
-            JOIN   courses  c ON l.course_id = c.id
-            WHERE  l.id = ?
-            """,
-            [lecture_id],
-        ).fetchone()
-
-    if row is None:
-        raise ValueError(f"Lecture {lecture_id} not found")
-
-    # Skip if already done
-    if row["audio_status"] == "done" and row["audio_path"] and os.path.exists(row["audio_path"]):
-        _bcast({"status": "done", "audio_path": row["audio_path"]})
-        return
-
-    _set_status(lecture_id, "downloading")
-    _bcast({"status": "downloading"})
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    safe_name = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")
-    filename = safe_name[:150]
-
-    # ── Fast path: no Chrome ──────────────────────────────────────────────────
-    video_json = json.loads(row["raw_json"])
-    stream_url = _extract_stream_url(video_json, row["hostname"])
-
-    if stream_url:
-        try:
-            session = _build_session_from_cookies()
-            audio_path = _download_audio_direct(session, stream_url, output_dir, filename)
-            if audio_path:
-                _set_status(lecture_id, "done", audio_path=audio_path)
-                _bcast({"status": "done", "audio_path": audio_path})
-                return
-            _LOGGER.warning("Fast download path returned no file for lecture %d, falling back to Chrome", lecture_id)
-        except Exception:
-            _LOGGER.warning("Fast download path failed for lecture %d, falling back to Chrome", lecture_id, exc_info=True)
-
-    # ── Slow fallback: Chrome ─────────────────────────────────────────────────
-    _LOGGER.info("Using Chrome fallback for lecture %d", lecture_id)
-    from echo360.videos import EchoCloudVideo
-
-    driver = None
-    try:
-        driver = _build_driver()
-        if not _load_session(driver, row["hostname"]):
-            raise RuntimeError("No valid session. Please re-authenticate via the CLI.")
-
-        video = EchoCloudVideo(video_json, driver, row["hostname"], alternative_feeds=False)
-        result = video.download(output_dir, filename, audio_only=True)
-
-        if result:
-            opus_path = os.path.join(output_dir, filename + ".opus")
-            audio_path = opus_path if os.path.exists(opus_path) else None
-            _set_status(lecture_id, "done", audio_path=audio_path)
-            _bcast({"status": "done", "audio_path": audio_path})
-        else:
-            _set_status(lecture_id, "error")
-            _bcast({"status": "error"})
-
-    except Exception as e:
-        _LOGGER.exception("download_lecture failed for lecture %d", lecture_id)
-        _set_status(lecture_id, "error")
-        _bcast({"status": "error", "error": str(e)})
-        raise
-    finally:
-        if driver:
-            try:
-                driver.quit()
-            except Exception:
-                pass
-
-
-def _set_status(lecture_id: int, status: str, audio_path: str | None = None) -> None:
-    from app.db import get_db
-
-    with get_db() as conn:
-        if audio_path is not None:
-            conn.execute(
-                "UPDATE lectures SET audio_status = ?, audio_path = ? WHERE id = ?",
-                [status, audio_path, lecture_id],
-            )
-        else:
-            conn.execute(
-                "UPDATE lectures SET audio_status = ? WHERE id = ?",
-                [status, lecture_id],
-            )

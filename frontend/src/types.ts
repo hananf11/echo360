@@ -7,8 +7,9 @@ export interface Course {
   last_synced_at: string | null
   lecture_count: number
   downloading_count: number
-  pending_count: number
+  queued_count: number
   year: string | null
+  total_duration_seconds: number
 }
 
 export interface Lecture {
@@ -18,9 +19,10 @@ export interface Lecture {
   title: string
   date: string
   audio_path: string | null
-  audio_status: 'pending' | 'downloading' | 'done' | 'error'
+  audio_status: 'pending' | 'queued' | 'downloading' | 'downloaded' | 'converting' | 'done' | 'error'
   transcript_status: 'pending' | 'queued' | 'transcribing' | 'done' | 'error'
   transcript_model: string | null
+  duration_seconds: number | null
 }
 
 export interface Transcript {
@@ -38,4 +40,5 @@ export interface SSEMessage {
   course_name?: string
   count?: number
   audio_path?: string | null
+  progress?: { done: number; total: number }
 }

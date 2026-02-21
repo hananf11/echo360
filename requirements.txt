@@ -11,3 +11,4 @@ fastapi
 uvicorn[standard]
 sse-starlette
 faster-whisper
+httpx>=0.27
