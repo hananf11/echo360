@@ -46,12 +46,15 @@ class Lecture(Base):
     raw_json = Column(Text)
     transcript_status = Column(String, nullable=False, default="pending")
     transcript_model = Column(String)
+    notes_status = Column(String, nullable=False, default="pending")
+    notes_model = Column(String)
     duration_seconds = Column(Integer)
     raw_path = Column(String)
     error_message = Column(String)
 
     course = relationship("Course", back_populates="lectures")
     transcripts = relationship("Transcript", back_populates="lecture", cascade="all, delete-orphan")
+    notes = relationship("Note", back_populates="lecture", cascade="all, delete-orphan")
 
 
 class Transcript(Base):
@@ -64,6 +67,19 @@ class Transcript(Base):
     created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
     lecture = relationship("Lecture", back_populates="transcripts")
+
+
+class Note(Base):
+    __tablename__ = "notes"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    lecture_id = Column(Integer, ForeignKey("lectures.id", ondelete="CASCADE"), nullable=False)
+    model = Column(String, nullable=False)
+    content_md = Column(Text, nullable=False)
+    frame_timestamps = Column(Text)
+    created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+
+    lecture = relationship("Lecture", back_populates="notes")
 
 
 class Job(Base):

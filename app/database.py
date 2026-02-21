@@ -89,6 +89,9 @@ def init_db() -> None:
         session.execute(
             text("UPDATE lectures SET transcript_status = 'pending' WHERE transcript_status IN ('queued', 'transcribing')")
         )
+        session.execute(
+            text("UPDATE lectures SET notes_status = 'pending' WHERE notes_status IN ('queued', 'generating')")
+        )
         _backfill_durations(session)
 
 
@@ -99,7 +102,8 @@ def _recover_downloading(session: Session) -> None:
         if lec.raw_path and os.path.exists(lec.raw_path):
             lec.audio_status = "downloaded"
         else:
-            lec.audio_status = "pending"
+            lec.audio_status = "error"
+            lec.error_message = "Download interrupted"
 
 
 def _recover_converting(session: Session) -> None:

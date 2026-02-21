@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sse_starlette.sse import EventSourceResponse
 
 from app.database import get_db, init_db
-from app.models import Course, Lecture, Transcript
+from app.models import Course, Lecture, Note, Transcript
 from app import jobs, scraper
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -95,6 +95,10 @@ class TranscribeRequest(BaseModel):
     model: str = "tiny"
 
 
+class GenerateNotesRequest(BaseModel):
+    model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
+
+
 # ── Courses ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/courses")
@@ -107,7 +111,9 @@ def list_courses():
                        SUM(CASE WHEN l.audio_status IN ('downloading', 'downloaded', 'converting') THEN 1 ELSE 0 END) AS downloading_count,
                        SUM(CASE WHEN l.audio_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
                        SUM(CASE WHEN l.audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded_count,
+                       SUM(CASE WHEN l.audio_status = 'no_media' THEN 1 ELSE 0 END) AS no_media_count,
                        SUM(CASE WHEN l.transcript_status = 'done' THEN 1 ELSE 0 END) AS transcribed_count,
+                       SUM(CASE WHEN l.notes_status = 'done' THEN 1 ELSE 0 END) AS notes_count,
                        SUM(COALESCE(l.duration_seconds, 0)) AS total_duration_seconds
                 FROM   courses  c
                 LEFT JOIN lectures l ON l.course_id = c.id
@@ -343,6 +349,72 @@ def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
     return {"queued": len(lecture_ids)}
 
 
+# ── Notes ──────────────────────────────────────────────────────────────────────
+
+@app.post("/api/lectures/{lecture_id}/generate-notes")
+def generate_notes(lecture_id: int, req: GenerateNotesRequest | None = None):
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        if lec.transcript_status != "done":
+            raise HTTPException(400, "Transcript not available yet")
+
+    model = req.model if req else "openrouter/meta-llama/llama-3.3-70b-instruct"
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec:
+            lec.notes_status = "queued"
+    jobs.enqueue_generate_notes(lecture_id, model)
+    return {"status": "queued"}
+
+
+@app.get("/api/lectures/{lecture_id}/notes")
+def get_notes(lecture_id: int):
+    with get_db() as session:
+        note = (
+            session.query(Note)
+            .filter(Note.lecture_id == lecture_id)
+            .order_by(Note.id.desc())
+            .first()
+        )
+    if not note:
+        raise HTTPException(404, "Notes not found")
+    return {
+        "model": note.model,
+        "content_md": note.content_md,
+        "frame_timestamps": json.loads(note.frame_timestamps) if note.frame_timestamps else [],
+        "created_at": note.created_at,
+    }
+
+
+@app.post("/api/courses/{course_id}/generate-notes-all")
+def generate_notes_all(course_id: int, req: GenerateNotesRequest | None = None):
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if not course:
+            raise HTTPException(404, "Course not found")
+        lectures = (
+            session.query(Lecture)
+            .filter(
+                Lecture.course_id == course_id,
+                Lecture.transcript_status == "done",
+                Lecture.notes_status.in_(("pending", "error")),
+            )
+            .all()
+        )
+        lecture_ids = [lec.id for lec in lectures]
+
+    model = req.model if req else "openrouter/meta-llama/llama-3.3-70b-instruct"
+    for lid in lecture_ids:
+        with get_db() as session:
+            lec = session.get(Lecture, lid)
+            if lec:
+                lec.notes_status = "queued"
+        jobs.enqueue_generate_notes(lid, model)
+    return {"queued": len(lecture_ids)}
+
+
 # ── Global transcribe-all ────────────────────────────────────────────────────
 
 @app.post("/api/transcribe-all")
@@ -440,11 +512,12 @@ def get_queue():
         rows = session.execute(
             text("""
                 SELECT l.id, l.title, l.date, l.audio_status, l.transcript_status,
-                       l.course_id, c.name AS course_name, l.error_message
+                       l.notes_status, l.course_id, c.name AS course_name, l.error_message
                 FROM lectures l
                 JOIN courses c ON l.course_id = c.id
-                WHERE l.audio_status NOT IN ('pending', 'done')
+                WHERE (l.audio_status NOT IN ('pending', 'done', 'no_media')
                    OR l.transcript_status NOT IN ('pending', 'done')
+                   OR l.notes_status NOT IN ('pending', 'done'))
                 ORDER BY
                     CASE l.audio_status
                         WHEN 'downloading' THEN 0

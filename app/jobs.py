@@ -16,6 +16,7 @@ _lock = threading.Lock()
 _download_sem: asyncio.Semaphore | None = None
 _transcribe_local_sem: asyncio.Semaphore | None = None
 _transcribe_remote_sem: asyncio.Semaphore | None = None
+_notes_sem: asyncio.Semaphore | None = None
 
 _LOCAL_MODELS = {"tiny", "base", "small", "turbo"}
 _tasks: set[asyncio.Task] = set()
@@ -29,13 +30,14 @@ def set_loop(loop: asyncio.AbstractEventLoop) -> None:
     _loop = loop
 
 
-async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_local_transcriptions: int = 1, max_concurrent_remote_transcriptions: int = 20) -> None:
+async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_local_transcriptions: int = 1, max_concurrent_remote_transcriptions: int = 20, max_concurrent_notes: int = 5) -> None:
     """Initialise concurrency semaphores. Called from lifespan."""
-    global _download_sem, _transcribe_local_sem, _transcribe_remote_sem
+    global _download_sem, _transcribe_local_sem, _transcribe_remote_sem, _notes_sem
     _download_sem = asyncio.Semaphore(max_concurrent_downloads)
     _transcribe_local_sem = asyncio.Semaphore(max_concurrent_local_transcriptions)
     _transcribe_remote_sem = asyncio.Semaphore(max_concurrent_remote_transcriptions)
-    _LOGGER.info("Download concurrency: %d, local transcription: %d, remote transcription: %d", max_concurrent_downloads, max_concurrent_local_transcriptions, max_concurrent_remote_transcriptions)
+    _notes_sem = asyncio.Semaphore(max_concurrent_notes)
+    _LOGGER.info("Download concurrency: %d, local transcription: %d, remote transcription: %d, notes: %d", max_concurrent_downloads, max_concurrent_local_transcriptions, max_concurrent_remote_transcriptions, max_concurrent_notes)
 
 
 def broadcast(data: dict) -> None:
@@ -106,6 +108,21 @@ def enqueue_transcribe(lecture_id: int, model_name: str) -> None:
                 _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
 
     if _loop is not None and sem is not None:
+        _schedule(_run())
+
+
+def enqueue_generate_notes(lecture_id: int, model: str) -> None:
+    """Schedule an async note generation task, gated by the notes semaphore."""
+    from app import note_generator
+
+    async def _run():
+        async with _notes_sem:
+            try:
+                await note_generator.generate_notes(lecture_id, model)
+            except Exception:
+                _LOGGER.exception("Note generation failed for lecture %d", lecture_id)
+
+    if _loop is not None and _notes_sem is not None:
         _schedule(_run())
 
 
