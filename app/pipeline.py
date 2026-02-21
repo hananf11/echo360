@@ -69,7 +69,7 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
         _bcast({"status": "done", "audio_path": row["audio_path"]})
         return
 
-    _set_status(lecture_id, "downloading")
+    _set_status(lecture_id, "downloading", error_message=None)
     _bcast({"status": "downloading"})
 
     os.makedirs(output_dir, exist_ok=True)
@@ -97,13 +97,14 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
             )
         except Exception as e:
             _LOGGER.exception("Chrome fallback failed for lecture %d", lecture_id)
-            _set_status(lecture_id, "error")
+            _set_status(lecture_id, "error", error_message=str(e))
             _bcast({"status": "error", "error": str(e)})
             raise
 
-    if not raw_path:
-        _set_status(lecture_id, "error")
-        _bcast({"status": "error"})
+    if not raw_path or not isinstance(raw_path, str):
+        msg = "No stream URL found — lecture may not have available media" if not stream_url else "Download failed — no file produced"
+        _set_status(lecture_id, "error", error_message=msg)
+        _bcast({"status": "error", "error": msg})
         return
 
     # Save raw path and transition to downloaded
@@ -167,6 +168,10 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
             raise RuntimeError("No valid session. Please re-authenticate via the CLI.")
 
         video = EchoCloudVideo(video_json, driver, row["hostname"], alternative_feeds=False)
+        # EchoCloudVideo sets _url to False when no streams are found
+        if not video.url:
+            _LOGGER.warning("Chrome fallback: no stream URL found for lecture (video.url=%r)", video.url)
+            return None
         # Use the existing download which produces a raw .ts file (we skip conversion here)
         result = video.download(output_dir, filename, audio_only=True)
         if result:
@@ -305,9 +310,9 @@ async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename:
             _set_status(lecture_id, "done", audio_path=opus_path, raw_path=None)
             _bcast({"status": "done", "audio_path": opus_path})
         else:
-            _set_status(lecture_id, "error")
+            _set_status(lecture_id, "error", error_message="ffmpeg conversion failed")
             _bcast({"status": "error", "error": "ffmpeg conversion failed"})
     except Exception as e:
         _LOGGER.exception("Conversion failed for lecture %d", lecture_id)
-        _set_status(lecture_id, "error")
+        _set_status(lecture_id, "error", error_message=str(e))
         _bcast({"status": "error", "error": str(e)})

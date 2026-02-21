@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive } from 'lucide-react'
-import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, getStorage, type StorageStats } from '../api'
+import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic } from 'lucide-react'
+import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, type StorageStats } from '../api'
 import type { Course, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import AddCourseModal from './AddCourseModal'
@@ -27,6 +27,7 @@ export default function CourseLibrary() {
   const [loading, setLoading] = useState(true)
   const [storage, setStorage] = useState<StorageStats | null>(null)
   const [globalQueued, setGlobalQueued] = useState<number | null>(null)
+  const [globalTranscribeQueued, setGlobalTranscribeQueued] = useState<number | null>(null)
 
   const load = useCallback(() => {
     getCourses()
@@ -75,6 +76,11 @@ export default function CourseLibrary() {
     setGlobalQueued(result.queued)
   }
 
+  const handleTranscribeAllGlobal = async () => {
+    const result = await transcribeAllGlobal()
+    setGlobalTranscribeQueued(result.queued)
+  }
+
   const handleDone = () => {
     load()
   }
@@ -109,6 +115,13 @@ export default function CourseLibrary() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={handleTranscribeAllGlobal}
+            className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+          >
+            <Mic size={16} />
+            Transcribe All
+          </button>
+          <button
             onClick={handleDownloadAllGlobal}
             className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
           >
@@ -128,6 +141,11 @@ export default function CourseLibrary() {
       {globalQueued !== null && globalQueued > 0 && (
         <p className="text-sm text-indigo-400 mb-4">
           {globalQueued} download{globalQueued !== 1 ? 's' : ''} queued.
+        </p>
+      )}
+      {globalTranscribeQueued !== null && globalTranscribeQueued > 0 && (
+        <p className="text-sm text-violet-400 mb-4">
+          {globalTranscribeQueued} transcription{globalTranscribeQueued !== 1 ? 's' : ''} queued.
         </p>
       )}
 
@@ -156,6 +174,14 @@ export default function CourseLibrary() {
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">{year}</h2>
                   <div className="flex items-center gap-3">
+                    <button
+                      onClick={() => group.forEach(c => transcribeAll(c.id))}
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
+                      title="Transcribe all lectures in this year"
+                    >
+                      <Mic size={12} />
+                      Transcribe all
+                    </button>
                     <button
                       onClick={() => group.forEach(c => downloadAll(c.id))}
                       className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-white transition-colors"
@@ -188,6 +214,16 @@ export default function CourseLibrary() {
                     <span className="text-slate-500"> · {formatTotalHours(course.total_duration_seconds)}</span>
                   )}
                 </p>
+                {course.lecture_count > 0 && (
+                  <div className="flex items-center gap-3 mt-1.5">
+                    <span className={`text-xs ${course.downloaded_count === course.lecture_count ? 'text-emerald-400' : 'text-slate-500'}`}>
+                      {course.downloaded_count}/{course.lecture_count} downloaded
+                    </span>
+                    <span className={`text-xs ${course.transcribed_count === course.lecture_count ? 'text-violet-400' : 'text-slate-500'}`}>
+                      {course.transcribed_count}/{course.lecture_count} transcribed
+                    </span>
+                  </div>
+                )}
                 {course.last_synced_at ? (
                   <p className="text-xs text-slate-600 mt-0.5">
                     Synced {new Date(course.last_synced_at).toLocaleDateString()}

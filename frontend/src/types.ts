@@ -8,6 +8,8 @@ export interface Course {
   lecture_count: number
   downloading_count: number
   queued_count: number
+  downloaded_count: number
+  transcribed_count: number
   year: string | null
   total_duration_seconds: number
 }
@@ -23,6 +25,7 @@ export interface Lecture {
   transcript_status: 'pending' | 'queued' | 'transcribing' | 'done' | 'error'
   transcript_model: string | null
   duration_seconds: number | null
+  error_message: string | null
 }
 
 export interface Transcript {

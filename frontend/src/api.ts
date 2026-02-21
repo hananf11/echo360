@@ -45,7 +45,7 @@ export const downloadLecture = (id: number): Promise<void> =>
 export const downloadAll = (courseId: number): Promise<{ queued: number }> =>
   fetch(`${BASE}/courses/${courseId}/download-all`, { method: 'POST' }).then(r => _json(r))
 
-export const transcribeLecture = (id: number, model = 'groq'): Promise<{ status: string }> =>
+export const transcribeLecture = (id: number, model = 'cloud'): Promise<{ status: string }> =>
   fetch(`${BASE}/lectures/${id}/transcribe`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -63,6 +63,7 @@ export interface QueueItem {
   transcript_status: string
   course_id: number
   course_name: string
+  error_message: string | null
 }
 
 export const getQueue = (): Promise<QueueItem[]> =>
@@ -80,8 +81,15 @@ export interface StorageStats {
 export const getStorage = (): Promise<StorageStats> =>
   fetch(`${BASE}/storage`).then(r => _json(r))
 
-export const transcribeAll = (courseId: number, model = 'groq'): Promise<{ queued: number }> =>
+export const transcribeAll = (courseId: number, model = 'modal'): Promise<{ queued: number }> =>
   fetch(`${BASE}/courses/${courseId}/transcribe-all`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model }),
+  }).then(r => _json(r))
+
+export const transcribeAllGlobal = (model = 'modal'): Promise<{ queued: number }> =>
+  fetch(`${BASE}/transcribe-all`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),

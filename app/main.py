@@ -102,6 +102,8 @@ def list_courses():
                    MIN(substr(l.date, 1, 4)) AS year,
                    SUM(CASE WHEN l.audio_status IN ('downloading', 'downloaded', 'converting') THEN 1 ELSE 0 END) AS downloading_count,
                    SUM(CASE WHEN l.audio_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+                   SUM(CASE WHEN l.audio_status = 'done' THEN 1 ELSE 0 END) AS downloaded_count,
+                   SUM(CASE WHEN l.transcript_status = 'done' THEN 1 ELSE 0 END) AS transcribed_count,
                    SUM(COALESCE(l.duration_seconds, 0)) AS total_duration_seconds
             FROM   courses  c
             LEFT JOIN lectures l ON l.course_id = c.id
@@ -317,13 +319,39 @@ def transcribe_all(course_id: int, req: TranscribeRequest | None = None):
     if not course:
         raise HTTPException(404, "Course not found")
 
-    model = req.model if req else "groq"
+    model = req.model if req else "modal"
     for lec in lectures:
         with db.get_db() as conn:
             conn.execute(
                 "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
                 [lec["id"]],
             )
+        jobs.enqueue_transcribe(lec["id"], model)
+    return {"queued": len(lectures)}
+
+
+# ── Global transcribe-all ────────────────────────────────────────────────────
+
+@app.post("/api/transcribe-all")
+def transcribe_all_global(req: TranscribeRequest | None = None):
+    """Queue transcription for all done lectures with pending/error transcript across all courses."""
+    with db.get_db() as conn:
+        lectures = conn.execute(
+            """SELECT id FROM lectures
+               WHERE audio_status = 'done'
+               AND transcript_status IN ('pending', 'error')"""
+        ).fetchall()
+
+    if not lectures:
+        return {"queued": 0}
+
+    model = req.model if req else "modal"
+    with db.get_db() as conn:
+        conn.executemany(
+            "UPDATE lectures SET transcript_status = 'queued' WHERE id = ?",
+            [(lec["id"],) for lec in lectures],
+        )
+    for lec in lectures:
         jobs.enqueue_transcribe(lec["id"], model)
     return {"queued": len(lectures)}
 
@@ -399,7 +427,7 @@ def get_queue():
         rows = conn.execute(
             """
             SELECT l.id, l.title, l.date, l.audio_status, l.transcript_status,
-                   l.course_id, c.name AS course_name
+                   l.course_id, c.name AS course_name, l.error_message
             FROM lectures l
             JOIN courses c ON l.course_id = c.id
             WHERE l.audio_status NOT IN ('pending', 'done')

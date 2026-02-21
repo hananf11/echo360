@@ -15,7 +15,7 @@ export default function CourseDetail() {
   const [loading, setLoading] = useState(true)
   const [queuedCount, setQueuedCount] = useState<number | null>(null)
   const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
-  const [transcribeModel, setTranscribeModel] = useState('groq')
+  const [transcribeModel, setTranscribeModel] = useState('modal')
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
 
   const load = useCallback(() => {
@@ -44,6 +44,8 @@ export default function CourseDetail() {
               update.transcript_status = 'transcribing'
             }
             if (msg.audio_path !== undefined) update.audio_path = msg.audio_path
+            if (msg.error) update.error_message = msg.error
+            if (msg.status && msg.status !== 'error') update.error_message = null
             return { ...l, ...update }
           })
         )
@@ -83,7 +85,7 @@ export default function CourseDetail() {
     if (msg.type === 'transcription_error' && msg.lecture_id !== undefined) {
       setLectures(prev =>
         prev.map(l =>
-          l.id === msg.lecture_id ? { ...l, transcript_status: 'error' } : l
+          l.id === msg.lecture_id ? { ...l, transcript_status: 'error', error_message: msg.error || l.error_message } : l
         )
       )
       setProgressMap(prev => {
@@ -111,6 +113,7 @@ export default function CourseDetail() {
   ).length
 
   const doneCount = lectures.filter(l => l.audio_status === 'done').length
+  const transcribedCount = lectures.filter(l => l.transcript_status === 'done').length
   const pendingTranscriptCount = lectures.filter(
     l =>
       l.audio_status === 'done' &&
@@ -135,7 +138,7 @@ export default function CourseDetail() {
             <div>
               <h1 className="text-2xl font-bold text-white leading-tight">{course?.name}</h1>
               <p className="text-slate-400 text-sm mt-1.5">
-                {lectures.length} lectures · {doneCount} downloaded
+                {lectures.length} lectures · {doneCount} downloaded{transcribedCount > 0 && ` · ${transcribedCount} transcribed`}
               </p>
             </div>
 
@@ -148,7 +151,9 @@ export default function CourseDetail() {
                     className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
                   >
                     <optgroup label="Remote">
+                      <option value="cloud">Cloud auto (Groq → Modal)</option>
                       <option value="groq">Groq cloud (fast)</option>
+                      <option value="modal">Modal GPU (no limits)</option>
                     </optgroup>
                     <optgroup label="Local">
                       <option value="tiny">tiny (fastest)</option>

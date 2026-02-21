@@ -237,6 +237,11 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
                           {ACTIVE_STATUSES.has(status) && progress && (
                             <QueueProgressBar progress={progress} />
                           )}
+                          {status === 'error' && item.error_message && (
+                            <p className="text-xs text-red-400/80 mt-1 truncate" title={item.error_message}>
+                              {item.error_message}
+                            </p>
+                          )}
                         </div>
                       )
                     })}

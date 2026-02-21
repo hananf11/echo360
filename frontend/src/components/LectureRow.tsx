@@ -58,6 +58,7 @@ function AudioStatusIcon({ status }: { status: Lecture['audio_status'] }) {
 function TranscriptStatusIcon({ status }: { status: Lecture['transcript_status'] }) {
   if (status === 'queued' || status === 'transcribing')
     return <div className="w-3.5 h-3.5 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
+  if (status === 'done') return <CheckCircle size={15} className="text-violet-400" />
   if (status === 'error') return <AlertCircle size={15} className="text-red-400" />
   return null
 }
@@ -76,7 +77,7 @@ const TRANSCRIPT_STATUS_LABEL: Record<Lecture['transcript_status'], string> = {
   pending: '',
   queued: 'Queued…',
   transcribing: 'Transcribing…',
-  done: '',
+  done: 'Transcribed',
   error: 'Transcript error',
 }
 
@@ -118,7 +119,7 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   )
 }
 
-export default function LectureRow({ lecture, isLast, transcribeModel = 'groq', progress }: Props) {
+export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
   const transcriptLabel = TRANSCRIPT_STATUS_LABEL[lecture.transcript_status]
@@ -149,7 +150,9 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'groq', 
 
             {/* Transcript status */}
             {transcriptLabel && (
-              <span className="text-xs text-slate-500">{transcriptLabel}</span>
+              <span className="text-xs text-slate-500" title={lecture.transcript_status === 'error' && lecture.error_message ? lecture.error_message : undefined}>
+                {transcriptLabel}
+              </span>
             )}
             <TranscriptStatusIcon status={lecture.transcript_status} />
 
@@ -180,7 +183,7 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'groq', 
             )}
 
             {/* Audio status */}
-            <span className="text-xs text-slate-500">
+            <span className="text-xs text-slate-500" title={lecture.error_message || undefined}>
               {AUDIO_STATUS_LABEL[lecture.audio_status]}
             </span>
             <AudioStatusIcon status={lecture.audio_status} />

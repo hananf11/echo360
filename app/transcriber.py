@@ -43,14 +43,18 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
     try:
         with db.get_db() as conn:
             conn.execute(
-                "UPDATE lectures SET transcript_status = 'transcribing' WHERE id = ?",
+                "UPDATE lectures SET transcript_status = 'transcribing', error_message = NULL WHERE id = ?",
                 [lecture_id],
             )
         jobs.broadcast({"type": "transcription_start", "lecture_id": lecture_id})
         _bcast({"status": "transcribing"})
 
-        if model_name.startswith("groq"):
+        if model_name == "cloud":
+            segments = await _transcribe_cloud(row["audio_path"], duration_seconds, _bcast)
+        elif model_name.startswith("groq"):
             segments = await _transcribe_groq(row["audio_path"], model_name, duration_seconds, _bcast)
+        elif model_name.startswith("modal"):
+            segments = await _transcribe_modal(row["audio_path"], duration_seconds, _bcast)
         else:
             segments = await _transcribe_local(row["audio_path"], model_name, duration_seconds, _bcast)
 
@@ -70,8 +74,8 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
         _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
         with db.get_db() as conn:
             conn.execute(
-                "UPDATE lectures SET transcript_status = 'error' WHERE id = ?",
-                [lecture_id],
+                "UPDATE lectures SET transcript_status = 'error', error_message = ? WHERE id = ?",
+                [str(e)[:500], lecture_id],
             )
         jobs.broadcast(
             {"type": "transcription_error", "lecture_id": lecture_id, "error": str(e)}
@@ -232,6 +236,77 @@ async def _transcribe_groq_chunked(chunks: list[str], groq_model: str, api_key: 
             _bcast({"status": "transcribing", "progress": {"done": round(time_offset, 1), "total": round(duration_seconds, 1), "stage": "transcribe"}})
 
     return all_segments
+
+
+async def _transcribe_modal(audio_path: str, duration_seconds: float, _bcast) -> list[dict]:
+    """Transcribe via a self-hosted Modal serverless endpoint."""
+    endpoint_url = os.environ.get("MODAL_WHISPER_URL")
+    if not endpoint_url:
+        raise RuntimeError("MODAL_WHISPER_URL environment variable is not set. Deploy modal_whisper.py first.")
+
+    _bcast({"status": "transcribing", "progress": {"done": 0, "total": round(duration_seconds, 1) if duration_seconds else 0, "stage": "transcribe"}})
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(900.0), follow_redirects=True) as client:
+                with open(audio_path, "rb") as f:
+                    resp = await client.post(
+                        endpoint_url,
+                        files={"file": (os.path.basename(audio_path), f, "audio/ogg")},
+                    )
+        except (httpx.ReadError, httpx.ConnectError, httpx.TimeoutException) as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt * 10  # 10s, 20s, 40s, 80s
+                _LOGGER.warning("Modal connection error (%s), retrying in %ds (attempt %d/%d)", type(e).__name__, wait, attempt + 1, max_retries)
+                await asyncio.sleep(wait)
+                continue
+            raise RuntimeError(f"Modal endpoint connection failed after {max_retries} attempts: {e}")
+
+        if resp.status_code == 200:
+            break
+        if (resp.status_code == 303 or resp.status_code >= 500) and attempt < max_retries - 1:
+            wait = 2 ** attempt * 10
+            _LOGGER.warning("Modal endpoint returned %d, retrying in %ds (attempt %d/%d)", resp.status_code, wait, attempt + 1, max_retries)
+            await asyncio.sleep(wait)
+            continue
+        raise RuntimeError(f"Modal endpoint error ({resp.status_code}): {resp.text[:500]}")
+
+    data = resp.json()
+    segments = []
+    for seg in data.get("segments", []):
+        segments.append({
+            "start": seg["start"],
+            "end": seg["end"],
+            "text": seg["text"].strip(),
+        })
+
+    if duration_seconds:
+        _bcast({"status": "transcribing", "progress": {"done": round(duration_seconds, 1), "total": round(duration_seconds, 1), "stage": "transcribe"}})
+
+    return segments
+
+
+async def _transcribe_cloud(audio_path: str, duration_seconds: float, _bcast) -> list[dict]:
+    """Cloud auto mode: try Groq first, fall back to Modal on rate limit or error."""
+    groq_key = os.environ.get("GROQ_API_KEY")
+    modal_url = os.environ.get("MODAL_WHISPER_URL")
+
+    if groq_key:
+        try:
+            return await _transcribe_groq(audio_path, "groq", duration_seconds, _bcast)
+        except RuntimeError as e:
+            err_msg = str(e)
+            if "429" in err_msg or "rate" in err_msg.lower():
+                _LOGGER.warning("Groq rate limited in cloud mode, falling back to Modal")
+            else:
+                _LOGGER.warning("Groq failed in cloud mode (%s), falling back to Modal", err_msg[:200])
+            if not modal_url:
+                raise
+    elif not modal_url:
+        raise RuntimeError("Cloud mode requires GROQ_API_KEY and/or MODAL_WHISPER_URL to be set")
+
+    return await _transcribe_modal(audio_path, duration_seconds, _bcast)
 
 
 async def _transcribe_local(audio_path: str, model_name: str, duration_seconds: float, _bcast) -> list[dict]:

@@ -14,7 +14,10 @@ _lock = threading.Lock()
 
 # Semaphore to cap concurrent downloads (async tasks, not threads)
 _download_sem: asyncio.Semaphore | None = None
-_transcribe_sem: asyncio.Semaphore | None = None
+_transcribe_local_sem: asyncio.Semaphore | None = None
+_transcribe_remote_sem: asyncio.Semaphore | None = None
+
+_LOCAL_MODELS = {"tiny", "base", "small", "turbo"}
 _tasks: set[asyncio.Task] = set()
 
 # Thread pool for Selenium (the only truly blocking work left)
@@ -26,12 +29,13 @@ def set_loop(loop: asyncio.AbstractEventLoop) -> None:
     _loop = loop
 
 
-async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_transcriptions: int = 2) -> None:
+async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_local_transcriptions: int = 1, max_concurrent_remote_transcriptions: int = 20) -> None:
     """Initialise concurrency semaphores. Called from lifespan."""
-    global _download_sem, _transcribe_sem
+    global _download_sem, _transcribe_local_sem, _transcribe_remote_sem
     _download_sem = asyncio.Semaphore(max_concurrent_downloads)
-    _transcribe_sem = asyncio.Semaphore(max_concurrent_transcriptions)
-    _LOGGER.info("Download concurrency limit: %d, transcription limit: %d", max_concurrent_downloads, max_concurrent_transcriptions)
+    _transcribe_local_sem = asyncio.Semaphore(max_concurrent_local_transcriptions)
+    _transcribe_remote_sem = asyncio.Semaphore(max_concurrent_remote_transcriptions)
+    _LOGGER.info("Download concurrency: %d, local transcription: %d, remote transcription: %d", max_concurrent_downloads, max_concurrent_local_transcriptions, max_concurrent_remote_transcriptions)
 
 
 def broadcast(data: dict) -> None:
@@ -88,17 +92,20 @@ def enqueue_convert(lecture_id: int, raw_path: str, output_dir: str, filename: s
 
 
 def enqueue_transcribe(lecture_id: int, model_name: str) -> None:
-    """Schedule an async transcription task, gated by the transcription semaphore."""
+    """Schedule an async transcription task, gated by the appropriate semaphore."""
     from app import transcriber
 
+    is_local = model_name in _LOCAL_MODELS
+    sem = _transcribe_local_sem if is_local else _transcribe_remote_sem
+
     async def _run():
-        async with _transcribe_sem:
+        async with sem:
             try:
                 await transcriber.transcribe_lecture(lecture_id, model_name)
             except Exception:
                 _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
 
-    if _loop is not None and _transcribe_sem is not None:
+    if _loop is not None and sem is not None:
         _schedule(_run())
 
 

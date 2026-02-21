@@ -58,6 +58,7 @@ def init_db() -> None:
             ("transcript_model", "TEXT"),
             ("duration_seconds", "INTEGER"),
             ("raw_path", "TEXT"),
+            ("error_message", "TEXT"),
         ]:
             try:
                 conn.execute(f"ALTER TABLE lectures ADD COLUMN {col} {defn}")
