@@ -2,47 +2,88 @@
 import json
 import logging
 import os
-import re
 
 import litellm
 
 from app.database import get_db
+from app.llm import router
 from app.models import Lecture, Note, Transcript
 from app import jobs
 
 _LOGGER = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "openrouter/meta-llama/llama-3.3-70b-instruct"
-
 SYSTEM_PROMPT = """\
-You are an expert lecture note-taker. Given a timestamped transcript of a lecture, produce two sections:
+You are an expert lecture note-taker. You will be given a timestamped transcript of a lecture.
 
-## Notes
-Structured, detailed markdown notes covering:
-- Key topics and themes
-- Important concepts and definitions
-- Significant examples or case studies
-- Formulas, equations, or technical details mentioned
-- Action items or assignments mentioned
+You MUST respond with a single JSON object matching this exact schema:
 
-Use headings, bullet points, and bold for emphasis. Be thorough but concise.
+{
+  "notes": "<structured markdown notes>",
+  "frame_timestamps": [
+    {"time": <seconds as number>, "reason": "<what visual is likely shown>"},
+    ...
+  ]
+}
 
-## Frame Timestamps
-A JSON code block containing an array of objects, each with:
-- `time`: the timestamp in seconds (number) where a visual aid, diagram, slide change, or important visual content is being discussed
-- `reason`: a brief description of what visual content is likely shown
+Rules for "notes":
+- Produce thorough, structured markdown covering: key topics, concepts, definitions, examples, formulas, and any assignments/action items mentioned.
+- Use markdown headings (###), bullet points, **bold** for key terms, and `code` for technical terms where appropriate.
+- Be detailed but concise. Organize by topic, not chronologically.
 
-Only include timestamps where the speaker clearly references visual content (e.g., "as you can see on this slide", "looking at this diagram", "this graph shows").
-If no visual references are found, return an empty array.
+Rules for "frame_timestamps":
+- Identify moments where visual content is likely being shown or changed. Include timestamps for:
+  1. Explicit visual references ("as you can see", "on this slide", "this diagram shows")
+  2. Topic transitions where a new slide is likely shown (new subject introduced, "let's move on to", "next we have")
+  3. When formulas, equations, or code are being explained in detail (likely written on screen)
+  4. When examples with specific data, tables, or figures are discussed
+  5. When the speaker describes spatial/visual concepts (graphs, architectures, flowcharts)
+- Each entry needs "time" (seconds from start, as a number) and "reason" (brief description of likely visual content)
+- Aim for at least 5-15 timestamps for a typical lecture. More for visually heavy lectures.
+- If the lecture is purely conversational with zero visual references, return an empty array, but this should be rare.
 
-Example format:
-```json
-[
-  {"time": 125.0, "reason": "Diagram of neural network architecture"},
-  {"time": 340.5, "reason": "Graph showing training loss over epochs"}
-]
-```
-"""
+IMPORTANT: Your entire response must be valid JSON. No text before or after the JSON object. No markdown code fences."""
+
+
+RESPONSE_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "lecture_notes",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "notes": {
+                    "type": "string",
+                    "description": "Structured markdown lecture notes",
+                },
+                "frame_timestamps": {
+                    "type": "array",
+                    "description": "Timestamps where visual content is likely shown",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "time": {
+                                "type": "number",
+                                "description": "Timestamp in seconds from start",
+                            },
+                            "reason": {
+                                "type": "string",
+                                "description": "Brief description of likely visual content",
+                            },
+                        },
+                        "required": ["time", "reason"],
+                        "additionalProperties": False,
+                    },
+                },
+            },
+            "required": ["notes", "frame_timestamps"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+# Simpler json_object mode for models that don't support json_schema
+RESPONSE_FORMAT_JSON = {"type": "json_object"}
 
 
 def _format_transcript(segments: list[dict]) -> str:
@@ -55,26 +96,61 @@ def _format_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _parse_response(text: str) -> tuple[str, list[dict]]:
-    """Parse LLM response into markdown notes and frame timestamps."""
-    # Split on ## Frame Timestamps header
-    parts = re.split(r"^## Frame Timestamps\s*$", text, maxsplit=1, flags=re.MULTILINE)
+def _parse_response(raw: str) -> tuple[str, list[dict]]:
+    """Parse JSON response into markdown notes and frame timestamps."""
+    # Strip markdown code fences if the model wrapped the JSON
+    text = raw.strip()
+    if text.startswith("```"):
+        first_newline = text.index("\n")
+        text = text[first_newline + 1:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
-    notes_md = parts[0].strip()
-    # Remove leading ## Notes header if present
-    notes_md = re.sub(r"^## Notes\s*\n", "", notes_md, count=1).strip()
+    # Some models output truncated or malformed JSON — try to repair
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        # Try to extract a valid JSON object from the response
+        data = _repair_json(text)
 
-    frame_timestamps = []
-    if len(parts) > 1:
-        # Extract JSON from code block
-        json_match = re.search(r"```(?:json)?\s*\n(.*?)\n```", parts[1], re.DOTALL)
-        if json_match:
+    notes_md = data.get("notes", "").strip()
+    frame_timestamps = data.get("frame_timestamps", [])
+
+    # Validate frame_timestamps structure
+    validated = []
+    for ft in frame_timestamps:
+        if isinstance(ft, dict) and "time" in ft and "reason" in ft:
             try:
-                frame_timestamps = json.loads(json_match.group(1))
-            except json.JSONDecodeError:
-                _LOGGER.warning("Failed to parse frame timestamps JSON")
+                validated.append({
+                    "time": float(ft["time"]),
+                    "reason": str(ft["reason"]),
+                })
+            except (ValueError, TypeError):
+                continue
+    # Sort by time
+    validated.sort(key=lambda x: x["time"])
 
-    return notes_md, frame_timestamps
+    return notes_md, validated
+
+
+def _is_schema_error(err: Exception) -> bool:
+    """Check if an error is due to json_schema response_format not being supported."""
+    err_str = str(err).lower()
+    return "response_format" in err_str or "json_schema" in err_str or "schema" in err_str
+
+
+async def _acompletion_with_schema_fallback(completion_fn, kwargs: dict) -> object:
+    """Call completion with json_schema, fall back to json_object if unsupported."""
+    kwargs["response_format"] = RESPONSE_SCHEMA
+    try:
+        return await completion_fn(**kwargs)
+    except Exception as e:
+        if _is_schema_error(e):
+            _LOGGER.info("json_schema not supported, retrying with json_object")
+            kwargs["response_format"] = RESPONSE_FORMAT_JSON
+            return await completion_fn(**kwargs)
+        raise
 
 
 async def generate_notes(lecture_id: int, model: str) -> None:
@@ -111,25 +187,40 @@ async def generate_notes(lecture_id: int, model: str) -> None:
         formatted = _format_transcript(segments)
         user_msg = f"# Lecture: {lecture_title}\n\n{formatted}"
 
-        # Resolve model: env var override or passed model string
-        llm_model = os.environ.get("NOTES_LLM_MODEL", model)
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ]
 
-        # Call LiteLLM
-        response = await litellm.acompletion(
-            model=llm_model,
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-            max_tokens=4096,
-            temperature=0.3,
-        )
+        # Determine model: env override → specific model → auto (router fallback chain)
+        env_model = os.environ.get("NOTES_LLM_MODEL")
+        specific_model = env_model or (model if model != "auto" else None)
 
+        base_kwargs = {"messages": messages, "max_tokens": 4096, "temperature": 0.3}
+
+        if specific_model:
+            # Direct call for a specific model (bypass router)
+            _LOGGER.info("Using specific LLM model: %s", specific_model)
+            response = await _acompletion_with_schema_fallback(
+                litellm.acompletion, {"model": specific_model, **base_kwargs},
+            )
+        else:
+            # Auto mode: router handles fallback chain with cooldowns
+            _LOGGER.info("Using router auto-fallback for notes")
+            response = await _acompletion_with_schema_fallback(
+                router.acompletion, {"model": "notes", **base_kwargs},
+            )
+
+        llm_model = response.model or specific_model or "unknown"
         content = response.choices[0].message.content
-        notes_md, frame_timestamps = _parse_response(content)
+        if not content or not content.strip():
+            raise RuntimeError("Empty response from LLM")
 
+        notes_md, frame_timestamps = _parse_response(content)
         if not notes_md:
-            raise RuntimeError("LLM returned empty notes")
+            raise RuntimeError("Parsed notes are empty")
+
+        _LOGGER.info("Success with model: %s (%d frame timestamps)", llm_model, len(frame_timestamps))
 
         # Store in DB
         with get_db() as session:
