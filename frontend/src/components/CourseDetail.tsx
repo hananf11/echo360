@@ -8,6 +8,13 @@ import LectureRow from './LectureRow'
 
 const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
 
+/** Try to split "Machine Learning COSC401" into [title, code] */
+function splitCourseCode(name: string): [string, string | null] {
+  const match = name.match(/^(.+?)\s+([A-Z]{3,5}\d{3,4})$/)
+  if (match) return [match[1], match[2]]
+  return [name, null]
+}
+
 export default function CourseDetail() {
   const { id } = useParams<{ id: string }>()
   const courseId = Number(id)
@@ -180,11 +187,18 @@ export default function CourseDetail() {
       (l.notes_status === 'pending' || l.notes_status === 'error')
   ).length
 
+  const displayName = course?.display_name || course?.name || ''
+  const [title, code] = splitCourseCode(displayName)
+
+  const allDownloaded = doneCount === lectures.length && lectures.length > 0
+  const allTranscribed = transcribedCount === lectures.length && lectures.length > 0
+  const allNotes = notesReadyCount === lectures.length && lectures.length > 0
+
   return (
-    <div className="max-w-4xl mx-auto px-6 py-10">
+    <div className="max-w-6xl mx-auto px-6 py-10">
       <Link
         to="/"
-        className="inline-flex items-center gap-2 text-slate-400 hover:text-white mb-6 transition-colors text-sm"
+        className="inline-flex items-center gap-2 text-slate-500 hover:text-white mb-6 transition-colors text-sm"
       >
         <ArrowLeft size={15} />
         Back to library
@@ -194,6 +208,7 @@ export default function CourseDetail() {
         <p className="text-slate-400 text-sm">Loading…</p>
       ) : (
         <>
+          {/* Header */}
           <div className="flex items-start justify-between mb-6 gap-4">
             <div>
               {editingName ? (
@@ -203,7 +218,7 @@ export default function CourseDetail() {
                     value={editName}
                     onChange={e => setEditName(e.target.value)}
                     onKeyDown={e => { if (e.key === 'Enter') handleSaveDisplayName(); if (e.key === 'Escape') setEditingName(false) }}
-                    className="text-2xl font-bold text-white bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 focus:outline-none focus:border-indigo-500"
+                    className="text-2xl font-bold text-white bg-slate-800 border border-slate-600 rounded-lg px-3 py-1 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
                     autoFocus
                   />
                   <button onClick={handleSaveDisplayName} className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">
@@ -219,33 +234,75 @@ export default function CourseDetail() {
                   onClick={() => { setEditName(course?.display_name || course?.name || ''); setEditingName(true) }}
                   title="Click to edit display name"
                 >
-                  {course?.display_name || course?.name}
+                  {title}
+                  {code && <span className="ml-2 text-sm font-mono text-slate-500 font-normal">{code}</span>}
                 </h1>
               )}
               {course?.display_name && (
                 <p className="text-slate-600 text-xs mt-0.5">{course.name}</p>
               )}
-              <p className="text-slate-400 text-sm mt-1.5">
-                {lectures.length} lectures · {doneCount} downloaded{transcribedCount > 0 && ` · ${transcribedCount} transcribed`}{notesReadyCount > 0 && ` · ${notesReadyCount} notes`}
-              </p>
+
+              {/* Stats row */}
+              <div className="flex items-center gap-2 mt-2 flex-wrap">
+                <span className="text-sm text-slate-400">{lectures.length} lectures</span>
+
+                {lectures.length > 0 && (
+                  <>
+                    <span className="text-slate-600">·</span>
+                    {allDownloaded ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-emerald-400/70">
+                        <Check size={11} strokeWidth={3} />
+                        All downloaded
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-500">{doneCount}/{lectures.length} downloaded</span>
+                    )}
+
+                    <span className="text-slate-600">·</span>
+                    {allTranscribed ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-violet-400/70">
+                        <Check size={11} strokeWidth={3} />
+                        All transcribed
+                      </span>
+                    ) : transcribedCount > 0 ? (
+                      <span className="text-xs text-slate-500">{transcribedCount}/{lectures.length} transcribed</span>
+                    ) : null}
+
+                    {notesReadyCount > 0 && (
+                      <>
+                        <span className="text-slate-600">·</span>
+                        {allNotes ? (
+                          <span className="inline-flex items-center gap-1 text-xs text-amber-400/70">
+                            <Check size={11} strokeWidth={3} />
+                            All notes
+                          </span>
+                        ) : (
+                          <span className="text-xs text-slate-500">{notesReadyCount}/{lectures.length} notes</span>
+                        )}
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            {/* Action buttons */}
+            <div className="flex items-center gap-2 flex-wrap justify-end">
               <button
                 onClick={handleFixTitles}
                 disabled={fixingTitles}
-                className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap disabled:opacity-40"
+                className="flex items-center gap-2 bg-slate-700/60 hover:bg-slate-600 text-slate-400 hover:text-white px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-40"
                 title="Use AI to clean up course and lecture titles"
               >
                 <Wand2 size={15} className={fixingTitles ? 'animate-spin' : ''} />
-                {fixingTitles ? 'Fixing…' : 'Fix Titles'}
+                <span className="hidden xl:inline">{fixingTitles ? 'Fixing…' : 'Fix Titles'}</span>
               </button>
               {pendingNotesCount > 0 && (
                 <>
                   <select
                     value={notesModel}
                     onChange={e => setNotesModel(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-amber-500"
+                    className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-amber-500"
                   >
                     <option value="auto">Auto (free first)</option>
                     <optgroup label="Free">
@@ -268,10 +325,10 @@ export default function CourseDetail() {
                   </select>
                   <button
                     onClick={handleGenerateNotesAll}
-                    className="flex items-center gap-2 bg-amber-700 hover:bg-amber-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                    className="flex items-center gap-2 bg-amber-700 hover:bg-amber-600 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
                   >
                     <Sparkles size={15} />
-                    Generate Notes ({pendingNotesCount})
+                    Notes ({pendingNotesCount})
                   </button>
                 </>
               )}
@@ -280,7 +337,7 @@ export default function CourseDetail() {
                   <select
                     value={transcribeModel}
                     onChange={e => setTranscribeModel(e.target.value)}
-                    className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
+                    className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
                   >
                     <optgroup label="Remote">
                       <option value="cloud">Cloud auto (Groq → Modal)</option>
@@ -296,25 +353,26 @@ export default function CourseDetail() {
                   </select>
                   <button
                     onClick={handleTranscribeAll}
-                    className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                    className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
                   >
                     <Mic size={15} />
-                    Transcribe All ({pendingTranscriptCount})
+                    Transcribe ({pendingTranscriptCount})
                   </button>
                 </>
               )}
               {pendingCount > 0 && (
                 <button
                   onClick={handleDownloadAll}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
                 >
                   <Download size={15} />
-                  Download All ({pendingCount})
+                  Download ({pendingCount})
                 </button>
               )}
             </div>
           </div>
 
+          {/* Queue notifications */}
           {queuedCount !== null && (
             <p className="text-sm text-indigo-400 mb-4">
               {queuedCount} download{queuedCount !== 1 ? 's' : ''} queued.
@@ -348,9 +406,12 @@ export default function CourseDetail() {
                 .map(([year, group]) => {
                   const sorted = [...group].sort((a, b) => b.date.localeCompare(a.date))
                   return (
-                  <div key={year} className="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
-                    <div className="px-5 py-2.5 border-b border-slate-700 bg-slate-700/40">
-                      <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{year}</span>
+                  <div key={year} className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
+                    <div className="px-5 py-2.5 border-b border-slate-700/50">
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-bold text-slate-300">{year}</span>
+                        <span className="text-xs text-slate-500">{group.length} lecture{group.length !== 1 ? 's' : ''}</span>
+                      </div>
                     </div>
                     <table className="w-full">
                       <tbody>

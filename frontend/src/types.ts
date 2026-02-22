@@ -12,6 +12,7 @@ export interface Course {
   downloaded_count: number
   no_media_count: number
   transcribed_count: number
+  notes_count: number
   year: string | null
   total_duration_seconds: number
 }

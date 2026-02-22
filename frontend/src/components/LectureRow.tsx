@@ -35,6 +35,11 @@ function formatEta(seconds: number): string {
   return `${h}h ${m % 60}m`
 }
 
+function formatDate(dateStr: string): string {
+  const d = new Date(dateStr)
+  return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
+}
+
 interface Props {
   lecture: Lecture
   isLast: boolean
@@ -43,61 +48,75 @@ interface Props {
   progress?: SSEMessage['progress']
 }
 
-function AudioStatusIcon({ status }: { status: Lecture['audio_status'] }) {
+function StatusPill({ children, color, title }: { children: React.ReactNode; color: 'emerald' | 'violet' | 'amber' | 'indigo' | 'red' | 'slate'; title?: string }) {
+  const colorMap = {
+    emerald: 'text-emerald-400 bg-emerald-400/10',
+    violet: 'text-violet-400 bg-violet-400/10',
+    amber: 'text-amber-400 bg-amber-400/10',
+    indigo: 'text-indigo-400 bg-indigo-400/10',
+    red: 'text-red-400 bg-red-400/10',
+    slate: 'text-slate-400 bg-slate-400/10',
+  }
+  return (
+    <span className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${colorMap[color]}`} title={title}>
+      {children}
+    </span>
+  )
+}
+
+function AudioStatus({ status, error }: { status: Lecture['audio_status']; error?: string | null }) {
   if (status === 'pending') return null
-  if (status === 'queued') return <Clock size={15} className="text-slate-500" />
-  if (status === 'downloading')
-    return <div className="w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
-  if (status === 'downloaded')
-    return <CheckCircle size={15} className="text-blue-400" />
-  if (status === 'converting')
-    return <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-  if (status === 'done') return <CheckCircle size={15} className="text-emerald-400" />
-  if (status === 'no_media') return <Ban size={15} className="text-slate-500" />
-  return <AlertCircle size={15} className="text-red-400" />
+  if (status === 'queued') return <StatusPill color="slate"><Clock size={11} /> Queued</StatusPill>
+  if (status === 'downloading') return (
+    <StatusPill color="indigo">
+      <div className="w-2.5 h-2.5 border-[1.5px] border-indigo-400 border-t-transparent rounded-full animate-spin" />
+      Downloading
+    </StatusPill>
+  )
+  if (status === 'downloaded') return <StatusPill color="indigo"><CheckCircle size={11} /> Downloaded</StatusPill>
+  if (status === 'converting') return (
+    <StatusPill color="amber">
+      <div className="w-2.5 h-2.5 border-[1.5px] border-amber-400 border-t-transparent rounded-full animate-spin" />
+      Converting
+    </StatusPill>
+  )
+  if (status === 'done') return <StatusPill color="emerald"><CheckCircle size={11} /> Done</StatusPill>
+  if (status === 'no_media') return <StatusPill color="slate"><Ban size={11} /> No media</StatusPill>
+  return <StatusPill color="red" title={error || undefined}><AlertCircle size={11} /> Error</StatusPill>
 }
 
-function TranscriptStatusIcon({ status }: { status: Lecture['transcript_status'] }) {
-  if (status === 'queued' || status === 'transcribing')
-    return <div className="w-3.5 h-3.5 border-2 border-violet-400 border-t-transparent rounded-full animate-spin" />
-  if (status === 'done') return <CheckCircle size={15} className="text-violet-400" />
-  if (status === 'error') return <AlertCircle size={15} className="text-red-400" />
-  return null
+function TranscriptStatus({ status, error }: { status: Lecture['transcript_status']; error?: string | null }) {
+  if (status === 'pending') return null
+  if (status === 'queued') return (
+    <StatusPill color="violet">
+      <Clock size={11} /> Transcription queued
+    </StatusPill>
+  )
+  if (status === 'transcribing') return (
+    <StatusPill color="violet">
+      <div className="w-2.5 h-2.5 border-[1.5px] border-violet-400 border-t-transparent rounded-full animate-spin" />
+      Transcribing
+    </StatusPill>
+  )
+  if (status === 'done') return <StatusPill color="violet"><CheckCircle size={11} /> Transcribed</StatusPill>
+  return <StatusPill color="red" title={error || undefined}><AlertCircle size={11} /> Transcript error</StatusPill>
 }
 
-function NotesStatusIcon({ status }: { status: Lecture['notes_status'] }) {
-  if (status === 'queued' || status === 'generating')
-    return <div className="w-3.5 h-3.5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-  if (status === 'done') return <CheckCircle size={15} className="text-amber-400" />
-  if (status === 'error') return <AlertCircle size={15} className="text-red-400" />
-  return null
-}
-
-const NOTES_STATUS_LABEL: Record<Lecture['notes_status'], string> = {
-  pending: '',
-  queued: 'Notes queued…',
-  generating: 'Generating notes…',
-  done: 'Notes',
-  error: 'Notes error',
-}
-
-const AUDIO_STATUS_LABEL: Record<Lecture['audio_status'], string> = {
-  pending: '',
-  queued: 'Queued…',
-  downloading: 'Downloading…',
-  downloaded: 'Downloaded',
-  converting: 'Converting…',
-  done: 'Done',
-  error: 'Error',
-  no_media: 'No media',
-}
-
-const TRANSCRIPT_STATUS_LABEL: Record<Lecture['transcript_status'], string> = {
-  pending: '',
-  queued: 'Queued…',
-  transcribing: 'Transcribing…',
-  done: 'Transcribed',
-  error: 'Transcript error',
+function NotesStatus({ status, error }: { status: Lecture['notes_status']; error?: string | null }) {
+  if (status === 'pending') return null
+  if (status === 'queued') return (
+    <StatusPill color="amber">
+      <Clock size={11} /> Notes queued
+    </StatusPill>
+  )
+  if (status === 'generating') return (
+    <StatusPill color="amber">
+      <div className="w-2.5 h-2.5 border-[1.5px] border-amber-400 border-t-transparent rounded-full animate-spin" />
+      Generating
+    </StatusPill>
+  )
+  if (status === 'done') return <StatusPill color="amber"><CheckCircle size={11} /> Notes</StatusPill>
+  return <StatusPill color="red" title={error || undefined}><AlertCircle size={11} /> Notes error</StatusPill>
 }
 
 function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress']> }) {
@@ -107,8 +126,8 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   const stage = progress.stage ?? 'download'
 
   const colors = {
-    download: { bar: 'bg-indigo-500', track: 'bg-slate-600' },
-    convert: { bar: 'bg-amber-500', track: 'bg-slate-600' },
+    download: { bar: 'bg-indigo-500', track: 'bg-slate-700' },
+    convert: { bar: 'bg-amber-500', track: 'bg-slate-700' },
   }
   const { bar, track } = colors[stage]
 
@@ -122,7 +141,7 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   }
 
   return (
-    <div className="mt-1">
+    <div className="mt-1.5">
       <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
         <span>{label}</span>
         <span>{Math.round(pct)}%</span>
@@ -140,66 +159,61 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
 export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', notesModel = 'auto', progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
-  const transcriptLabel = TRANSCRIPT_STATUS_LABEL[lecture.transcript_status]
-  const notesLabel = NOTES_STATUS_LABEL[lecture.notes_status]
   const hasTranscript = lecture.transcript_status === 'done'
-  const hasNotes = lecture.notes_status === 'done'
   const canPlay = lecture.audio_status === 'done'
-
   const showProgress = progress && progress.total > 0
 
   return (
     <>
       <tr
-        className={`hover:bg-slate-700/40 transition-colors ${
-          !isLast && !playerOpen ? 'border-b border-slate-700/60' : ''
+        className={`hover:bg-slate-700/30 transition-colors ${
+          !isLast && !playerOpen ? 'border-b border-slate-700/40' : ''
         }`}
       >
-        <td className="px-5 py-3 text-sm text-slate-400 whitespace-nowrap font-mono">
-          {lecture.date}
+        {/* Date */}
+        <td className="px-5 py-3 text-sm text-slate-500 whitespace-nowrap">
+          <span className="font-mono text-xs">{formatDate(lecture.date)}</span>
         </td>
-        <td className="px-5 py-3 text-sm text-slate-100">
+
+        {/* Title + progress */}
+        <td className="px-4 py-3 text-sm text-slate-200">
           <div>{lecture.title}</div>
           {showProgress && <ProgressBar progress={progress} />}
         </td>
-        <td className="px-5 py-3 text-sm text-slate-500 whitespace-nowrap">
+
+        {/* Duration */}
+        <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
           {lecture.duration_seconds ? formatDuration(lecture.duration_seconds) : '—'}
         </td>
-        <td className="px-5 py-3">
-          <div className="flex items-center justify-end gap-2.5">
 
-            {/* Notes status */}
-            {notesLabel && (
-              <span className="text-xs text-slate-500" title={lecture.notes_status === 'error' && lecture.error_message ? lecture.error_message : undefined}>
-                {notesLabel}
-              </span>
-            )}
-            <NotesStatusIcon status={lecture.notes_status} />
+        {/* Status pills */}
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-1.5 flex-wrap justify-end">
+            <NotesStatus status={lecture.notes_status} error={lecture.error_message} />
+            <TranscriptStatus status={lecture.transcript_status} error={lecture.error_message} />
+            <AudioStatus status={lecture.audio_status} error={lecture.error_message} />
+          </div>
+        </td>
 
+        {/* Actions */}
+        <td className="px-4 py-3">
+          <div className="flex items-center justify-end gap-1.5">
             {/* Generate notes button */}
             {hasTranscript && (lecture.notes_status === 'pending' || lecture.notes_status === 'error') && (
               <button
                 onClick={() => generateNotes(lecture.id, notesModel)}
-                className="p-1.5 rounded-lg bg-slate-700 hover:bg-amber-600 text-slate-400 hover:text-white transition-colors"
+                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-amber-600 text-slate-500 hover:text-white transition-colors"
                 title="Generate notes"
               >
                 <Sparkles size={13} />
               </button>
             )}
 
-            {/* Transcript status */}
-            {transcriptLabel && (
-              <span className="text-xs text-slate-500" title={lecture.transcript_status === 'error' && lecture.error_message ? lecture.error_message : undefined}>
-                {transcriptLabel}
-              </span>
-            )}
-            <TranscriptStatusIcon status={lecture.transcript_status} />
-
             {/* Transcribe button */}
             {canPlay && (lecture.transcript_status === 'pending' || lecture.transcript_status === 'error') && (
               <button
                 onClick={() => transcribeLecture(lecture.id, transcribeModel)}
-                className="p-1.5 rounded-lg bg-slate-700 hover:bg-violet-600 text-slate-400 hover:text-white transition-colors"
+                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-violet-600 text-slate-500 hover:text-white transition-colors"
                 title="Transcribe audio"
               >
                 <Mic size={13} />
@@ -210,10 +224,10 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
             {canPlay && (
               <button
                 onClick={() => setPlayerOpen(o => !o)}
-                className={`p-1.5 rounded-lg transition-colors ${
+                className={`p-1.5 rounded-md transition-colors ${
                   playerOpen
                     ? 'bg-indigo-600 text-white'
-                    : 'bg-slate-700 hover:bg-indigo-600 text-slate-400 hover:text-white'
+                    : 'bg-slate-700/50 hover:bg-indigo-600 text-slate-500 hover:text-white'
                 }`}
                 title={playerOpen ? 'Hide player' : 'Play audio'}
               >
@@ -221,17 +235,11 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
               </button>
             )}
 
-            {/* Audio status */}
-            <span className="text-xs text-slate-500" title={lecture.error_message || undefined}>
-              {AUDIO_STATUS_LABEL[lecture.audio_status]}
-            </span>
-            <AudioStatusIcon status={lecture.audio_status} />
-
             {/* Download button */}
             {(lecture.audio_status === 'pending' || lecture.audio_status === 'error') && (
               <button
                 onClick={() => downloadLecture(lecture.id)}
-                className="p-1.5 rounded-lg bg-slate-700 hover:bg-indigo-600 text-slate-400 hover:text-white transition-colors"
+                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-indigo-600 text-slate-500 hover:text-white transition-colors"
                 title="Download audio"
               >
                 <Download size={13} />
@@ -244,7 +252,7 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
         <LecturePlayer
           lectureId={lecture.id}
           hasTranscript={hasTranscript}
-          hasNotes={hasNotes}
+          hasNotes={lecture.notes_status === 'done'}
           isLast={isLast}
         />
       )}
