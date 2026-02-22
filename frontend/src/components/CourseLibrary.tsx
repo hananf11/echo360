@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic } from 'lucide-react'
-import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, type StorageStats } from '../api'
+import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic, Wand2 } from 'lucide-react'
+import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, fixTitles, type StorageStats } from '../api'
 import type { Course, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import AddCourseModal from './AddCourseModal'
@@ -46,6 +46,9 @@ export default function CourseLibrary() {
       setSyncing(s => { const n = new Set(s); n.delete(msg.course_id!); return n })
       load()
     }
+    if (msg.type === 'titles_fixed') {
+      load()
+    }
     if (msg.type === 'lecture_update' && msg.course_id !== undefined) {
       const cid = msg.course_id
       setCourses(prev => prev.map(c => {
@@ -74,6 +77,10 @@ export default function CourseLibrary() {
   const handleDownloadAllGlobal = async () => {
     const result = await downloadAllGlobal()
     setGlobalQueued(result.queued)
+  }
+
+  const handleFixTitlesAll = async () => {
+    courses.forEach(c => fixTitles(c.id))
   }
 
   const handleTranscribeAllGlobal = async () => {
@@ -114,6 +121,13 @@ export default function CourseLibrary() {
           </div>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={handleFixTitlesAll}
+            className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
+          >
+            <Wand2 size={16} />
+            Fix Titles
+          </button>
           <button
             onClick={handleTranscribeAllGlobal}
             className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium"
@@ -207,7 +221,7 @@ export default function CourseLibrary() {
               className="bg-slate-800 rounded-xl p-5 flex flex-col gap-4 border border-slate-700 hover:border-slate-500 transition-colors"
             >
               <div className="flex-1 min-w-0">
-                <h2 className="font-semibold text-white truncate leading-snug">{course.name}</h2>
+                <h2 className="font-semibold text-white leading-snug">{course.display_name || course.name}</h2>
                 <p className="text-sm text-slate-400 mt-1.5">
                   {course.lecture_count} lecture{course.lecture_count !== 1 ? 's' : ''}
                   {course.total_duration_seconds > 0 && (

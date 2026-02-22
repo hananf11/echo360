@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download, Mic, Sparkles } from 'lucide-react'
-import { getCourse, getLectures, downloadAll, transcribeAll, generateNotesAll } from '../api'
+import { ArrowLeft, Download, Mic, Sparkles, Wand2, Check, X } from 'lucide-react'
+import { getCourse, getLectures, downloadAll, transcribeAll, generateNotesAll, fixTitles, updateCourseDisplayName } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import LectureRow from './LectureRow'
@@ -19,8 +19,11 @@ export default function CourseDetail() {
   const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
   const [notesQueuedCount, setNotesQueuedCount] = useState<number | null>(null)
   const [transcribeModel, setTranscribeModel] = useState('modal')
-  const [notesModel, setNotesModel] = useState('openrouter/meta-llama/llama-3.3-70b-instruct')
+  const [notesModel, setNotesModel] = useState('auto')
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
+  const [editingName, setEditingName] = useState(false)
+  const [editName, setEditName] = useState('')
+  const [fixingTitles, setFixingTitles] = useState(false)
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -118,7 +121,17 @@ export default function CourseDetail() {
         )
       )
     }
-  }, [])
+    if (msg.type === 'titles_fixing' && msg.course_id === courseId) {
+      setFixingTitles(true)
+    }
+    if (msg.type === 'titles_fixed' && msg.course_id === courseId) {
+      setFixingTitles(false)
+      load()
+    }
+    if (msg.type === 'titles_error' && msg.course_id === courseId) {
+      setFixingTitles(false)
+    }
+  }, [courseId, load])
 
   useSSE(handleSSE)
 
@@ -135,6 +148,18 @@ export default function CourseDetail() {
   const handleGenerateNotesAll = async () => {
     const result = await generateNotesAll(courseId, notesModel)
     setNotesQueuedCount(result.queued)
+  }
+
+  const handleFixTitles = async () => {
+    setFixingTitles(true)
+    await fixTitles(courseId)
+  }
+
+  const handleSaveDisplayName = async () => {
+    const trimmed = editName.trim()
+    const updated = await updateCourseDisplayName(courseId, trimmed || null)
+    setCourse(updated)
+    setEditingName(false)
   }
 
   const pendingCount = lectures.filter(
@@ -171,13 +196,50 @@ export default function CourseDetail() {
         <>
           <div className="flex items-start justify-between mb-6 gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-white leading-tight">{course?.name}</h1>
+              {editingName ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => { if (e.key === 'Enter') handleSaveDisplayName(); if (e.key === 'Escape') setEditingName(false) }}
+                    className="text-2xl font-bold text-white bg-slate-700 border border-slate-600 rounded-lg px-3 py-1 focus:outline-none focus:border-indigo-500"
+                    autoFocus
+                  />
+                  <button onClick={handleSaveDisplayName} className="p-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition-colors">
+                    <Check size={16} />
+                  </button>
+                  <button onClick={() => setEditingName(false)} className="p-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-400 hover:text-white transition-colors">
+                    <X size={16} />
+                  </button>
+                </div>
+              ) : (
+                <h1
+                  className="text-2xl font-bold text-white leading-tight cursor-pointer hover:text-slate-300 transition-colors"
+                  onClick={() => { setEditName(course?.display_name || course?.name || ''); setEditingName(true) }}
+                  title="Click to edit display name"
+                >
+                  {course?.display_name || course?.name}
+                </h1>
+              )}
+              {course?.display_name && (
+                <p className="text-slate-600 text-xs mt-0.5">{course.name}</p>
+              )}
               <p className="text-slate-400 text-sm mt-1.5">
                 {lectures.length} lectures · {doneCount} downloaded{transcribedCount > 0 && ` · ${transcribedCount} transcribed`}{notesReadyCount > 0 && ` · ${notesReadyCount} notes`}
               </p>
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                onClick={handleFixTitles}
+                disabled={fixingTitles}
+                className="flex items-center gap-2 bg-slate-700 hover:bg-slate-600 text-slate-300 hover:text-white px-4 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap disabled:opacity-40"
+                title="Use AI to clean up course and lecture titles"
+              >
+                <Wand2 size={15} className={fixingTitles ? 'animate-spin' : ''} />
+                {fixingTitles ? 'Fixing…' : 'Fix Titles'}
+              </button>
               {pendingNotesCount > 0 && (
                 <>
                   <select
@@ -185,14 +247,23 @@ export default function CourseDetail() {
                     onChange={e => setNotesModel(e.target.value)}
                     className="bg-slate-700 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-amber-500"
                   >
-                    <optgroup label="OpenRouter">
+                    <option value="auto">Auto (free first)</option>
+                    <optgroup label="Free">
+                      <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+                      <option value="openrouter/google/gemma-3-27b-it:free">Gemma 3 27B</option>
+                      <option value="openrouter/mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1</option>
+                      <option value="openrouter/qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
+                      <option value="openrouter/deepseek/deepseek-r1-0528:free">DeepSeek R1</option>
+                      <option value="openrouter/nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 405B</option>
+                    </optgroup>
+                    <optgroup label="Cheap">
+                      <option value="openrouter/google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                      <option value="openrouter/minimax/minimax-m2.1">MiniMax M2.1</option>
+                    </optgroup>
+                    <optgroup label="Paid">
                       <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
                       <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
                       <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
-                    </optgroup>
-                    <optgroup label="Direct">
-                      <option value="groq/llama-3.3-70b-versatile">Groq Llama 3.3</option>
-                      <option value="ollama/llama3">Ollama Llama 3</option>
                     </optgroup>
                   </select>
                   <button

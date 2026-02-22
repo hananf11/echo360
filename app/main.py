@@ -98,7 +98,11 @@ class TranscribeRequest(BaseModel):
 
 
 class GenerateNotesRequest(BaseModel):
-    model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
+    model: str = "auto"
+
+
+class UpdateDisplayNameRequest(BaseModel):
+    display_name: str | None = None
 
 
 # ── Courses ───────────────────────────────────────────────────────────────────
@@ -219,6 +223,28 @@ def delete_course(course_id: int):
         course = session.get(Course, course_id)
         if course:
             session.delete(course)
+
+
+@app.patch("/api/courses/{course_id}")
+def update_course(course_id: int, req: UpdateDisplayNameRequest):
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if not course:
+            raise HTTPException(404, "Course not found")
+        course.display_name = req.display_name
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        return course.to_dict()
+
+
+@app.post("/api/courses/{course_id}/fix-titles")
+def fix_titles(course_id: int):
+    with get_db() as session:
+        course = session.get(Course, course_id)
+    if not course:
+        raise HTTPException(404, "Course not found")
+    jobs.enqueue_clean_titles(course_id)
+    return {"status": "queued"}
 
 
 # ── Lectures ──────────────────────────────────────────────────────────────────

@@ -44,6 +44,9 @@ function AppContent() {
     if (msg.type === 'transcription_start') {
       fetch('/api/queue').then(r => r.json()).then((items: unknown[]) => setActiveCount(items.length)).catch(() => {})
     }
+    if (msg.type === 'notes_start' || msg.type === 'notes_done' || msg.type === 'notes_error') {
+      fetch('/api/queue').then(r => r.json()).then((items: unknown[]) => setActiveCount(items.length)).catch(() => {})
+    }
   }, [])
 
   useSSE(handleSSE)

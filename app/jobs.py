@@ -126,6 +126,21 @@ def enqueue_generate_notes(lecture_id: int, model: str) -> None:
         _schedule(_run())
 
 
+def enqueue_clean_titles(course_id: int) -> None:
+    """Schedule an async title cleanup task, gated by the notes semaphore."""
+    from app import title_cleaner
+
+    async def _run():
+        async with _notes_sem:
+            try:
+                await title_cleaner.clean_titles(course_id)
+            except Exception:
+                _LOGGER.exception("Title cleanup failed for course %d", course_id)
+
+    if _loop is not None and _notes_sem is not None:
+        _schedule(_run())
+
+
 def _schedule(coro) -> None:
     """Schedule a coroutine as a fire-and-forget task on the event loop."""
     if _loop is None:

@@ -61,6 +61,7 @@ export interface QueueItem {
   date: string
   audio_status: string
   transcript_status: string
+  notes_status: string
   course_id: number
   course_name: string
   error_message: string | null
@@ -110,4 +111,14 @@ export const generateNotesAll = (courseId: number, model: string): Promise<{ que
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ model }),
+  }).then(r => _json(r))
+
+export const fixTitles = (courseId: number): Promise<{ status: string }> =>
+  fetch(`${BASE}/courses/${courseId}/fix-titles`, { method: 'POST' }).then(r => _json(r))
+
+export const updateCourseDisplayName = (courseId: number, displayName: string | null): Promise<Course> =>
+  fetch(`${BASE}/courses/${courseId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ display_name: displayName }),
   }).then(r => _json(r))

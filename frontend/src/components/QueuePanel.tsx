@@ -1,54 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { X, Download, RefreshCw, Mic, AlertCircle, CheckCircle, Clock } from 'lucide-react'
+import { X, Download, Mic, Sparkles, AlertCircle, Clock } from 'lucide-react'
 import { getQueue, type QueueItem } from '../api'
 import type { SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 
-function StatusBadge({ status }: { status: string }) {
-  switch (status) {
-    case 'queued':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">
-          <Clock size={10} /> Queued
-        </span>
-      )
-    case 'downloading':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-indigo-900/60 text-indigo-300">
-          <div className="w-2 h-2 border border-indigo-400 border-t-transparent rounded-full animate-spin" />
-          Downloading
-        </span>
-      )
-    case 'downloaded':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-blue-900/60 text-blue-300">
-          <CheckCircle size={10} /> Downloaded
-        </span>
-      )
-    case 'converting':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-900/60 text-amber-300">
-          <div className="w-2 h-2 border border-amber-400 border-t-transparent rounded-full animate-spin" />
-          Converting
-        </span>
-      )
-    case 'transcribing':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-violet-900/60 text-violet-300">
-          <div className="w-2 h-2 border border-violet-400 border-t-transparent rounded-full animate-spin" />
-          Transcribing
-        </span>
-      )
-    case 'error':
-      return (
-        <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/60 text-red-300">
-          <AlertCircle size={10} /> Error
-        </span>
-      )
-    default:
-      return null
-  }
-}
+// ── Shared helpers ──────────────────────────────────────────────────────────
 
 function ElapsedTimer({ startTime }: { startTime: number }) {
   const [elapsed, setElapsed] = useState(0)
@@ -94,16 +50,13 @@ function formatTimePair(done: number, total: number): string {
   return `${fmt(done)} / ${fmt(total)}`
 }
 
-function QueueProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress']> }) {
+function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress']> }) {
   if (!progress.total || progress.total <= 0) return null
 
   const pct = Math.min(100, (progress.done / progress.total) * 100)
   const stage = progress.stage ?? 'download'
 
-  const colors = {
-    download: 'bg-indigo-500',
-    convert: 'bg-amber-500',
-  }
+  const colors = { download: 'bg-indigo-500', convert: 'bg-amber-500' }
 
   let label = ''
   if (stage === 'download') {
@@ -116,7 +69,7 @@ function QueueProgressBar({ progress }: { progress: NonNullable<SSEMessage['prog
 
   return (
     <div className="mt-1.5">
-      <div className="flex items-center justify-between text-xs text-slate-500 mb-0.5">
+      <div className="flex items-center justify-between text-[10px] text-slate-500 mb-0.5">
         <span>{label}</span>
         <span>{Math.round(pct)}%</span>
       </div>
@@ -130,14 +83,155 @@ function QueueProgressBar({ progress }: { progress: NonNullable<SSEMessage['prog
   )
 }
 
-function activeStatus(item: QueueItem): string {
-  // Show the most interesting non-idle status
-  if (!['pending', 'done'].includes(item.audio_status)) return item.audio_status
-  if (!['pending', 'done'].includes(item.transcript_status)) return item.transcript_status
-  return item.audio_status
+// ── Lane types ──────────────────────────────────────────────────────────────
+
+interface LaneItem {
+  item: QueueItem
+  status: 'active' | 'queued' | 'error'
+  statusLabel: string
 }
 
-const ACTIVE_STATUSES = new Set(['downloading', 'converting', 'transcribing'])
+function buildLanes(items: QueueItem[]) {
+  const downloads: LaneItem[] = []
+  const transcriptions: LaneItem[] = []
+  const notes: LaneItem[] = []
+
+  for (const item of items) {
+    // Downloads lane
+    if (!['pending', 'done', 'no_media'].includes(item.audio_status)) {
+      const isActive = ['downloading', 'converting', 'downloaded'].includes(item.audio_status)
+      const isError = item.audio_status === 'error'
+      const statusLabel =
+        item.audio_status === 'downloading' ? 'Downloading' :
+        item.audio_status === 'converting' ? 'Converting' :
+        item.audio_status === 'downloaded' ? 'Downloaded' :
+        item.audio_status === 'queued' ? 'Queued' :
+        item.audio_status === 'error' ? 'Error' : item.audio_status
+      downloads.push({ item, status: isError ? 'error' : isActive ? 'active' : 'queued', statusLabel })
+    }
+
+    // Transcriptions lane
+    if (!['pending', 'done'].includes(item.transcript_status)) {
+      const isActive = item.transcript_status === 'transcribing'
+      const isError = item.transcript_status === 'error'
+      const statusLabel =
+        item.transcript_status === 'transcribing' ? 'Transcribing' :
+        item.transcript_status === 'queued' ? 'Queued' :
+        item.transcript_status === 'error' ? 'Error' : item.transcript_status
+      transcriptions.push({ item, status: isError ? 'error' : isActive ? 'active' : 'queued', statusLabel })
+    }
+
+    // Notes lane
+    if (!['pending', 'done'].includes(item.notes_status)) {
+      const isActive = item.notes_status === 'generating'
+      const isError = item.notes_status === 'error'
+      const statusLabel =
+        item.notes_status === 'generating' ? 'Generating' :
+        item.notes_status === 'queued' ? 'Queued' :
+        item.notes_status === 'error' ? 'Error' : item.notes_status
+      notes.push({ item, status: isError ? 'error' : isActive ? 'active' : 'queued', statusLabel })
+    }
+  }
+
+  // Sort each lane: active first, then queued, then errors
+  const sortOrder = { active: 0, queued: 1, error: 2 }
+  const sort = (a: LaneItem, b: LaneItem) => sortOrder[a.status] - sortOrder[b.status] || a.item.id - b.item.id
+
+  downloads.sort(sort)
+  transcriptions.sort(sort)
+  notes.sort(sort)
+
+  return { downloads, transcriptions, notes }
+}
+
+// ── Lane component ──────────────────────────────────────────────────────────
+
+interface LaneProps {
+  label: string
+  icon: React.ReactNode
+  color: string
+  accentColor: string
+  items: LaneItem[]
+  progressMap: Record<number, SSEMessage['progress']>
+  startTimes: Record<number, number>
+}
+
+function Lane({ label, icon, color, accentColor, items, progressMap, startTimes }: LaneProps) {
+  if (items.length === 0) return null
+
+  const activeCount = items.filter(i => i.status === 'active').length
+  const queuedCount = items.filter(i => i.status === 'queued').length
+  const errorCount = items.filter(i => i.status === 'error').length
+
+  const summary = [
+    activeCount > 0 && `${activeCount} active`,
+    queuedCount > 0 && `${queuedCount} queued`,
+    errorCount > 0 && `${errorCount} error`,
+  ].filter(Boolean).join(', ')
+
+  return (
+    <div>
+      <div className={`flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider mb-2 ${color}`}>
+        {icon}
+        {label}
+        <span className="text-slate-500 font-normal normal-case">— {summary}</span>
+      </div>
+      <div className="flex flex-col gap-1">
+        {items.map(({ item, status, statusLabel }) => {
+          const progress = progressMap[item.id]
+          const started = startTimes[item.id]
+          return (
+            <div key={`${label}-${item.id}`} className="bg-slate-700/50 rounded-lg px-3 py-2">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm text-slate-200 truncate">{item.title}</p>
+                    {status === 'active' && started && <ElapsedTimer startTime={started} />}
+                  </div>
+                  <p className="text-xs text-slate-500 truncate">{item.course_name}</p>
+                </div>
+                <StatusPill status={status} label={statusLabel} accentColor={accentColor} />
+              </div>
+              {status === 'active' && progress && <ProgressBar progress={progress} />}
+              {status === 'error' && item.error_message && (
+                <p className="text-xs text-red-400/80 mt-1 truncate" title={item.error_message}>
+                  {item.error_message}
+                </p>
+              )}
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function StatusPill({ status, label, accentColor }: { status: 'active' | 'queued' | 'error'; label: string; accentColor: string }) {
+  if (status === 'active') {
+    return (
+      <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${accentColor}`}>
+        <div className="w-2 h-2 border border-current border-t-transparent rounded-full animate-spin" />
+        {label}
+      </span>
+    )
+  }
+  if (status === 'error') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-red-900/60 text-red-300">
+        <AlertCircle size={10} /> {label}
+      </span>
+    )
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-400">
+      <Clock size={10} /> {label}
+    </span>
+  )
+}
+
+// ── Main panel ──────────────────────────────────────────────────────────────
+
+const ACTIVE_STATUSES = new Set(['downloading', 'converting', 'transcribing', 'generating'])
 
 interface Props {
   open: boolean
@@ -159,14 +253,19 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
 
   const handleSSE = useCallback((msg: SSEMessage) => {
     if (msg.type === 'lecture_update' || msg.type === 'transcription_start' ||
-        msg.type === 'transcription_done' || msg.type === 'transcription_error') {
+        msg.type === 'transcription_done' || msg.type === 'transcription_error' ||
+        msg.type === 'notes_start' || msg.type === 'notes_done' || msg.type === 'notes_error') {
       load()
     }
     // Track when items become active
-    if (msg.type === 'lecture_update' && msg.lecture_id !== undefined && msg.status) {
-      if (ACTIVE_STATUSES.has(msg.status)) {
+    if (msg.lecture_id !== undefined) {
+      const s = msg.status ?? (msg.type === 'notes_start' ? 'generating' : msg.type === 'transcription_start' ? 'transcribing' : undefined)
+      if (s && ACTIVE_STATUSES.has(s)) {
         setStartTimes(prev => prev[msg.lecture_id!] ? prev : { ...prev, [msg.lecture_id!]: Date.now() })
-      } else {
+      }
+      if (msg.type === 'transcription_done' || msg.type === 'transcription_error' ||
+          msg.type === 'notes_done' || msg.type === 'notes_error' ||
+          (msg.status && !ACTIVE_STATUSES.has(msg.status))) {
         setStartTimes(prev => {
           const next = { ...prev }
           delete next[msg.lecture_id!]
@@ -180,19 +279,8 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
 
   if (!open) return null
 
-  const downloading = items.filter(i => activeStatus(i) === 'downloading')
-  const converting = items.filter(i => activeStatus(i) === 'converting' || activeStatus(i) === 'downloaded')
-  const queued = items.filter(i => activeStatus(i) === 'queued')
-  const transcribing = items.filter(i => activeStatus(i) === 'transcribing')
-  const errors = items.filter(i => activeStatus(i) === 'error')
-
-  const sections = [
-    { label: 'Downloading', icon: <Download size={13} />, items: downloading, color: 'text-indigo-400' },
-    { label: 'Converting', icon: <RefreshCw size={13} />, items: converting, color: 'text-amber-400' },
-    { label: 'Queued', icon: <Clock size={13} />, items: queued, color: 'text-slate-400' },
-    { label: 'Transcribing', icon: <Mic size={13} />, items: transcribing, color: 'text-violet-400' },
-    { label: 'Errors', icon: <AlertCircle size={13} />, items: errors, color: 'text-red-400' },
-  ].filter(s => s.items.length > 0)
+  const { downloads, transcriptions, notes } = buildLanes(items)
+  const totalItems = downloads.length + transcriptions.length + notes.length
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end">
@@ -206,47 +294,37 @@ export default function QueuePanel({ open, onClose, progressMap }: Props) {
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {sections.length === 0 ? (
+          {totalItems === 0 ? (
             <p className="text-sm text-slate-500 text-center py-8">Nothing in the queue.</p>
           ) : (
             <div className="flex flex-col gap-5">
-              {sections.map(section => (
-                <div key={section.label}>
-                  <div className={`flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider mb-2 ${section.color}`}>
-                    {section.icon}
-                    {section.label} ({section.items.length})
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    {section.items.map(item => {
-                      const progress = progressMap[item.id]
-                      const status = activeStatus(item)
-                      const started = startTimes[item.id]
-                      return (
-                        <div key={item.id} className="bg-slate-700/50 rounded-lg px-3 py-2">
-                          <div className="flex items-center justify-between gap-2">
-                            <div className="min-w-0 flex-1">
-                              <div className="flex items-center gap-2">
-                                <p className="text-sm text-slate-200 truncate">{item.title}</p>
-                                {ACTIVE_STATUSES.has(status) && started && <ElapsedTimer startTime={started} />}
-                              </div>
-                              <p className="text-xs text-slate-500 truncate">{item.course_name}</p>
-                            </div>
-                            <StatusBadge status={status} />
-                          </div>
-                          {ACTIVE_STATUSES.has(status) && progress && (
-                            <QueueProgressBar progress={progress} />
-                          )}
-                          {status === 'error' && item.error_message && (
-                            <p className="text-xs text-red-400/80 mt-1 truncate" title={item.error_message}>
-                              {item.error_message}
-                            </p>
-                          )}
-                        </div>
-                      )
-                    })}
-                  </div>
-                </div>
-              ))}
+              <Lane
+                label="Downloads"
+                icon={<Download size={13} />}
+                color="text-indigo-400"
+                accentColor="bg-indigo-900/60 text-indigo-300"
+                items={downloads}
+                progressMap={progressMap}
+                startTimes={startTimes}
+              />
+              <Lane
+                label="Transcriptions"
+                icon={<Mic size={13} />}
+                color="text-violet-400"
+                accentColor="bg-violet-900/60 text-violet-300"
+                items={transcriptions}
+                progressMap={progressMap}
+                startTimes={startTimes}
+              />
+              <Lane
+                label="Notes"
+                icon={<Sparkles size={13} />}
+                color="text-amber-400"
+                accentColor="bg-amber-900/60 text-amber-300"
+                items={notes}
+                progressMap={progressMap}
+                startTimes={startTimes}
+              />
             </div>
           )}
         </div>

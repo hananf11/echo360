@@ -137,7 +137,7 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   )
 }
 
-export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', notesModel = 'openrouter/meta-llama/llama-3.3-70b-instruct', progress }: Props) {
+export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', notesModel = 'auto', progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
   const transcriptLabel = TRANSCRIPT_STATUS_LABEL[lecture.transcript_status]

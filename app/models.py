@@ -24,6 +24,7 @@ class Course(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String, nullable=False, default="Untitled")
+    display_name = Column(String)
     url = Column(String, nullable=False, unique=True)
     section_id = Column(String, nullable=False)
     hostname = Column(String, nullable=False)

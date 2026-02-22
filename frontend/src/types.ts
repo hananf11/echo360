@@ -1,6 +1,7 @@
 export interface Course {
   id: number
   name: string
+  display_name: string | null
   url: string
   section_id: string
   hostname: string
