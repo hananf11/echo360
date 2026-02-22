@@ -22,7 +22,9 @@ NOTES_MODELS = [
 ]
 
 TITLES_MODELS = [
+    "openrouter/google/gemini-2.5-flash-lite",
     "openrouter/minimax/minimax-m2.1",
+    "openrouter/meta-llama/llama-3.3-70b-instruct:free",
 ]
 
 
@@ -43,10 +45,12 @@ def _build_model_list() -> list[dict]:
 
 
 def _build_fallbacks() -> list[dict]:
-    """Build fallback chain: notes-0 → notes-1 → ... → notes-N."""
+    """Build fallback chains for notes and titles."""
     fallbacks = []
     if len(NOTES_MODELS) > 1:
         fallbacks.append({"notes-0": [f"notes-{i}" for i in range(1, len(NOTES_MODELS))]})
+    if len(TITLES_MODELS) > 1:
+        fallbacks.append({"titles-0": [f"titles-{i}" for i in range(1, len(TITLES_MODELS))]})
     return fallbacks
 
 

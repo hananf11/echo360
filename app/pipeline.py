@@ -75,9 +75,11 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
 
     # Early exit if lecture has no media at all
     if not stream_url:
-        has_video = video_json.get("lesson", {}).get("hasVideo", False)
-        has_available = video_json.get("lesson", {}).get("hasAvailableVideo", False)
-        if not has_video or not has_available:
+        lesson = video_json.get("lesson", {})
+        has_content = lesson.get("hasContent", False)
+        has_media = bool(lesson.get("medias"))
+        has_video = lesson.get("hasVideo", False)
+        if not has_content and not has_media and not has_video:
             _set_status(lecture_id, "no_media", error_message="Lecture has no available media")
             _bcast({"status": "no_media"})
             return

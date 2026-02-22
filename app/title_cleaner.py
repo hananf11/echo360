@@ -115,7 +115,13 @@ async def clean_titles(course_id: int) -> None:
 
         content = response.choices[0].message.content
         if not content or not content.strip():
-            raise RuntimeError("Empty response from LLM")
+            _LOGGER.warning("Empty response from %s, falling back", response.model)
+            # Fall back to json_object format in case json_schema caused the empty response
+            kwargs["response_format"] = RESPONSE_FORMAT_JSON
+            response = await router.acompletion(**kwargs)
+            content = response.choices[0].message.content
+            if not content or not content.strip():
+                raise RuntimeError("Empty response from LLM")
 
         result = _parse_response(content)
         _LOGGER.info("Title cleanup succeeded with model: %s", response.model)

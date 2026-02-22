@@ -224,6 +224,24 @@ def sync_course(course_id: int, course_url: str) -> None:
                 )
                 session.execute(stmt)
 
+            # Reset no_media lectures whose raw_json now indicates media is available
+            no_media_lectures = (
+                session.query(Lecture)
+                .filter(Lecture.course_id == course_id, Lecture.audio_status == "no_media")
+                .all()
+            )
+            for lec in no_media_lectures:
+                try:
+                    data = json.loads(lec.raw_json)
+                    lesson = data.get("lesson", data)
+                    has_content = lesson.get("hasContent", False)
+                    has_media = bool(lesson.get("medias"))
+                    if has_content or has_media:
+                        lec.audio_status = "pending"
+                        lec.error_message = None
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
         _bcast({"type": "sync_done", "course_name": course_name, "count": len(lectures)})
 
     except Exception as e:
@@ -327,7 +345,8 @@ def _extract_stream_url(video_json: dict, hostname: str):
 
     # Method 2: M3U8 manifests
     try:
-        if not (video_json["lesson"].get("hasVideo") and video_json["lesson"].get("hasAvailableVideo")):
+        lesson = video_json["lesson"]
+        if not (lesson.get("hasVideo") or lesson.get("hasContent") or lesson.get("medias")):
             return None
         manifests = video_json["lesson"]["video"]["media"]["media"]["versions"][0]["manifests"]
         m3u8urls = [m["uri"] for m in manifests if m.get("uri")]

@@ -29,6 +29,7 @@ export interface Lecture {
   transcript_model: string | null
   notes_status: 'pending' | 'queued' | 'generating' | 'done' | 'error'
   notes_model: string | null
+  frames_status: 'pending' | 'queued' | 'extracting' | 'done' | 'error'
   duration_seconds: number | null
   error_message: string | null
 }
@@ -55,6 +56,7 @@ export interface SSEMessage {
   course_name?: string
   count?: number
   audio_path?: string | null
+  frames_status?: string
   progress?: {
     done: number
     total: number

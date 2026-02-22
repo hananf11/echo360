@@ -45,11 +45,13 @@ function StepIndicator({ current, total, label, done, colorDone, colorPartial }:
 
 function StatusBadge({ downloaded, transcribed, notes, total, noMedia }: { downloaded: number; transcribed: number; notes: number; total: number; noMedia: number }) {
   const effective = total - noMedia
-  if (effective === 0) return null
+  if (effective === 0) {
+    return <span className="text-[11px] text-slate-500">No media available</span>
+  }
 
-  const allDownloaded = downloaded + noMedia >= total
-  const allTranscribed = transcribed + noMedia >= total
-  const allNotes = notes + noMedia >= total
+  const allDownloaded = downloaded >= effective
+  const allTranscribed = transcribed >= effective
+  const allNotes = notes >= effective
 
   return (
     <div className="flex items-center gap-3">

@@ -57,6 +57,7 @@ export default function CourseDetail() {
               update.transcript_status = 'transcribing'
             }
             if (msg.audio_path !== undefined) update.audio_path = msg.audio_path
+            if (msg.frames_status) update.frames_status = msg.frames_status as Lecture['frames_status']
             if (msg.error) update.error_message = msg.error
             if (msg.status && msg.status !== 'error') update.error_message = null
             return { ...l, ...update }
@@ -128,6 +129,27 @@ export default function CourseDetail() {
         )
       )
     }
+    if (msg.type === 'frames_start' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, frames_status: 'extracting' } : l
+        )
+      )
+    }
+    if (msg.type === 'frames_done' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, frames_status: 'done' } : l
+        )
+      )
+    }
+    if (msg.type === 'frames_error' && msg.lecture_id !== undefined) {
+      setLectures(prev =>
+        prev.map(l =>
+          l.id === msg.lecture_id ? { ...l, frames_status: 'error', error_message: msg.error || l.error_message } : l
+        )
+      )
+    }
     if (msg.type === 'titles_fixing' && msg.course_id === courseId) {
       setFixingTitles(true)
     }
@@ -173,6 +195,8 @@ export default function CourseDetail() {
     l => l.audio_status === 'pending' || l.audio_status === 'error'
   ).length
 
+  const noMediaCount = lectures.filter(l => l.audio_status === 'no_media').length
+  const effectiveCount = lectures.length - noMediaCount
   const doneCount = lectures.filter(l => l.audio_status === 'done').length
   const transcribedCount = lectures.filter(l => l.transcript_status === 'done').length
   const pendingTranscriptCount = lectures.filter(
@@ -190,9 +214,9 @@ export default function CourseDetail() {
   const displayName = course?.display_name || course?.name || ''
   const [title, code] = splitCourseCode(displayName)
 
-  const allDownloaded = doneCount === lectures.length && lectures.length > 0
-  const allTranscribed = transcribedCount === lectures.length && lectures.length > 0
-  const allNotes = notesReadyCount === lectures.length && lectures.length > 0
+  const allDownloaded = effectiveCount > 0 && doneCount >= effectiveCount
+  const allTranscribed = effectiveCount > 0 && transcribedCount >= effectiveCount
+  const allNotes = effectiveCount > 0 && notesReadyCount >= effectiveCount
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
@@ -246,7 +270,12 @@ export default function CourseDetail() {
               <div className="flex items-center gap-2 mt-2 flex-wrap">
                 <span className="text-sm text-slate-400">{lectures.length} lectures</span>
 
-                {lectures.length > 0 && (
+                {effectiveCount === 0 && lectures.length > 0 ? (
+                  <>
+                    <span className="text-slate-600">·</span>
+                    <span className="text-xs text-slate-500">No media available</span>
+                  </>
+                ) : effectiveCount > 0 && (
                   <>
                     <span className="text-slate-600">·</span>
                     {allDownloaded ? (
@@ -255,7 +284,7 @@ export default function CourseDetail() {
                         All downloaded
                       </span>
                     ) : (
-                      <span className="text-xs text-slate-500">{doneCount}/{lectures.length} downloaded</span>
+                      <span className="text-xs text-slate-500">{doneCount}/{effectiveCount} downloaded</span>
                     )}
 
                     <span className="text-slate-600">·</span>
@@ -265,7 +294,7 @@ export default function CourseDetail() {
                         All transcribed
                       </span>
                     ) : transcribedCount > 0 ? (
-                      <span className="text-xs text-slate-500">{transcribedCount}/{lectures.length} transcribed</span>
+                      <span className="text-xs text-slate-500">{transcribedCount}/{effectiveCount} transcribed</span>
                     ) : null}
 
                     {notesReadyCount > 0 && (
@@ -277,7 +306,7 @@ export default function CourseDetail() {
                             All notes
                           </span>
                         ) : (
-                          <span className="text-xs text-slate-500">{notesReadyCount}/{lectures.length} notes</span>
+                          <span className="text-xs text-slate-500">{notesReadyCount}/{effectiveCount} notes</span>
                         )}
                       </>
                     )}
