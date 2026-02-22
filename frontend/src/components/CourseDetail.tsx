@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download, Mic, Sparkles, Wand2, Check, X } from 'lucide-react'
+import { ArrowLeft, Download, Mic, Sparkles, Wand2, Check, X, CalendarClock } from 'lucide-react'
 import { getCourse, getLectures, downloadAll, transcribeAll, generateNotesAll, fixTitles, updateCourseDisplayName } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
@@ -31,6 +31,7 @@ export default function CourseDetail() {
   const [editingName, setEditingName] = useState(false)
   const [editName, setEditName] = useState('')
   const [fixingTitles, setFixingTitles] = useState(false)
+  const [showFuture, setShowFuture] = useState(false)
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -217,6 +218,16 @@ export default function CourseDetail() {
   const allDownloaded = effectiveCount > 0 && doneCount >= effectiveCount
   const allTranscribed = effectiveCount > 0 && transcribedCount >= effectiveCount
   const allNotes = effectiveCount > 0 && notesReadyCount >= effectiveCount
+
+  // Filter out future lectures (date > tomorrow) by default
+  const tomorrow = useMemo(() => {
+    const d = new Date()
+    d.setDate(d.getDate() + 1)
+    return d.toISOString().slice(0, 10)
+  }, [])
+
+  const futureLectureCount = lectures.filter(l => l.date > tomorrow).length
+  const visibleLectures = showFuture ? lectures : lectures.filter(l => l.date <= tomorrow)
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
@@ -425,7 +436,7 @@ export default function CourseDetail() {
           ) : (
             <div className="flex flex-col gap-6">
               {Object.entries(
-                lectures.reduce<Record<string, Lecture[]>>((groups, l) => {
+                visibleLectures.reduce<Record<string, Lecture[]>>((groups, l) => {
                   const year = l.date?.slice(0, 4) ?? 'Unknown'
                   ;(groups[year] ??= []).push(l)
                   return groups
@@ -459,6 +470,20 @@ export default function CourseDetail() {
                   </div>
                   )
                 })}
+
+              {/* Future lectures toggle */}
+              {futureLectureCount > 0 && (
+                <button
+                  onClick={() => setShowFuture(f => !f)}
+                  className="flex items-center justify-center gap-2 text-xs text-slate-500 hover:text-slate-300 py-3 transition-colors"
+                >
+                  <CalendarClock size={14} />
+                  {showFuture
+                    ? 'Hide future lectures'
+                    : `${futureLectureCount} scheduled lecture${futureLectureCount !== 1 ? 's' : ''} hidden`
+                  }
+                </button>
+              )}
             </div>
           )}
         </>

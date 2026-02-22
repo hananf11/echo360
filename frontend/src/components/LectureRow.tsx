@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { Download, CheckCircle, AlertCircle, Clock, Mic, Play, Pause, Ban, Sparkles } from 'lucide-react'
+import { format } from 'timeago.js'
 import { downloadLecture, transcribeLecture, generateNotes } from '../api'
 import type { Lecture, SSEMessage } from '../types'
 import LecturePlayer from './LecturePlayer'
@@ -39,6 +40,7 @@ function formatDate(dateStr: string): string {
   const d = new Date(dateStr)
   return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
 }
+
 
 interface Props {
   lecture: Lecture
@@ -171,8 +173,9 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
         }`}
       >
         {/* Date */}
-        <td className="px-5 py-3 text-sm text-slate-500 whitespace-nowrap">
-          <span className="font-mono text-xs">{formatDate(lecture.date)}</span>
+        <td className="px-5 py-3 whitespace-nowrap">
+          <span className="font-mono text-xs text-slate-500">{formatDate(lecture.date)}</span>
+          <span className="text-[10px] text-slate-600 ml-1.5">{format(lecture.date)}</span>
         </td>
 
         {/* Title + progress */}
@@ -253,6 +256,7 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
           lectureId={lecture.id}
           hasTranscript={hasTranscript}
           hasNotes={lecture.notes_status === 'done'}
+          framesStatus={lecture.frames_status}
           isLast={isLast}
         />
       )}

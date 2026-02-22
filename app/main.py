@@ -1,9 +1,13 @@
 import asyncio
 import json
+import logging
 import os
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+
+# Configure root logger so app.* modules output to stderr (visible in docker logs)
+logging.basicConfig(level=logging.INFO, format="%(levelname)s  [%(name)s] %(message)s")
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
@@ -458,6 +462,82 @@ def generate_notes_all(course_id: int, req: GenerateNotesRequest | None = None):
                 lec.notes_status = "queued"
         jobs.enqueue_generate_notes(lid, model)
     return {"queued": len(lecture_ids)}
+
+
+# ── Frames ─────────────────────────────────────────────────────────────────────
+
+@app.post("/api/lectures/{lecture_id}/extract-frames")
+def extract_frames(lecture_id: int):
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        if lec.notes_status != "done":
+            raise HTTPException(400, "Notes not generated yet")
+
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if lec:
+            lec.frames_status = "queued"
+    jobs.enqueue_extract_frames(lecture_id)
+    return {"status": "queued"}
+
+
+@app.get("/api/lectures/{lecture_id}/frames")
+def get_frames(lecture_id: int):
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        course_name = lec.course.name
+        row = lec.to_dict()
+
+        note = (
+            session.query(Note)
+            .filter(Note.lecture_id == lecture_id)
+            .order_by(Note.id.desc())
+            .first()
+        )
+        frame_timestamps = json.loads(note.frame_timestamps) if note and note.frame_timestamps else []
+
+    if not frame_timestamps:
+        return []
+
+    course_dir = os.path.join(AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name))
+    frames_dir = os.path.join(course_dir, "frames")
+    filename_base = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
+
+    frames = []
+    for ft in frame_timestamps:
+        ts = int(ft["time"])
+        frame_file = f"{filename_base}_{ts}s.jpg"
+        frame_path = os.path.join(frames_dir, frame_file)
+        if os.path.exists(frame_path):
+            frames.append({
+                "url": f"/api/lectures/{lecture_id}/frames/{ts}",
+                "time": ft["time"],
+                "reason": ft["reason"],
+            })
+    return frames
+
+
+@app.get("/api/lectures/{lecture_id}/frames/{timestamp}")
+def get_frame_image(lecture_id: int, timestamp: int):
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        course_name = lec.course.name
+        row = lec.to_dict()
+
+    course_dir = os.path.join(AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name))
+    frames_dir = os.path.join(course_dir, "frames")
+    filename_base = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
+    frame_path = os.path.join(frames_dir, f"{filename_base}_{timestamp}s.jpg")
+
+    if not os.path.exists(frame_path):
+        raise HTTPException(404, "Frame not found")
+    return FileResponse(frame_path, media_type="image/jpeg")
 
 
 # ── Global transcribe-all ────────────────────────────────────────────────────
