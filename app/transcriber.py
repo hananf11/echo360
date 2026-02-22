@@ -62,8 +62,6 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
             return
         if lec.audio_status != "done" or not lec.audio_path:
             return
-        if lec.transcript_status == "done":
-            return
         course_id = lec.course_id
         audio_path = lec.audio_path
         duration_seconds = lec.duration_seconds

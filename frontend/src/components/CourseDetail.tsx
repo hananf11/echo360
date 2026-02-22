@@ -216,8 +216,8 @@ export default function CourseDetail() {
 
   const selDownloadable = selectedLectures.filter(l => l.audio_status === 'pending' || l.audio_status === 'error').length
   const selRedownloadable = selectedLectures.filter(l => l.audio_status === 'done').length
-  const selTranscribable = selectedLectures.filter(l => l.audio_status === 'done' && (l.transcript_status === 'pending' || l.transcript_status === 'error')).length
-  const selNotesReady = selectedLectures.filter(l => l.transcript_status === 'done' && (l.notes_status === 'pending' || l.notes_status === 'error')).length
+  const selTranscribable = selectedLectures.filter(l => l.audio_status === 'done' && l.transcript_status !== 'queued' && l.transcript_status !== 'transcribing').length
+  const selNotesReady = selectedLectures.filter(l => l.transcript_status === 'done' && l.notes_status !== 'queued' && l.notes_status !== 'generating').length
 
   const handleBulkDownload = async () => {
     const ids = selectedLectures.filter(l => l.audio_status === 'pending' || l.audio_status === 'error').map(l => l.id)
@@ -230,12 +230,12 @@ export default function CourseDetail() {
   }
 
   const handleBulkTranscribe = async () => {
-    const ids = selectedLectures.filter(l => l.audio_status === 'done' && (l.transcript_status === 'pending' || l.transcript_status === 'error')).map(l => l.id)
+    const ids = selectedLectures.filter(l => l.audio_status === 'done' && l.transcript_status !== 'queued' && l.transcript_status !== 'transcribing').map(l => l.id)
     await bulkTranscribe(ids, transcribeModel)
   }
 
   const handleBulkGenerateNotes = async () => {
-    const ids = selectedLectures.filter(l => l.transcript_status === 'done' && (l.notes_status === 'pending' || l.notes_status === 'error')).map(l => l.id)
+    const ids = selectedLectures.filter(l => l.transcript_status === 'done' && l.notes_status !== 'queued' && l.notes_status !== 'generating').map(l => l.id)
     await bulkGenerateNotes(ids, notesModel)
   }
 
@@ -366,9 +366,9 @@ export default function CourseDetail() {
           </div>
 
           {/* Toolbar — sticky, matches card theming */}
-          <div className="sticky top-0 z-40 bg-slate-800/70 rounded-xl border border-slate-700/50 px-4 py-2.5 mb-4 backdrop-blur-sm">
+          <div className="sticky top-0 z-40 bg-slate-800/70 rounded-xl border border-slate-700/50 px-4 py-2.5 mb-4 backdrop-blur-sm flex flex-col gap-2">
+            {/* Top row: Sync, Fix Titles, selection info */}
             <div className="flex items-center gap-2 min-h-[28px]">
-              {/* Left: always Sync + Fix Titles */}
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleSync}
@@ -389,122 +389,120 @@ export default function CourseDetail() {
                 </button>
               </div>
 
-              {/* Separator + selection info when active */}
               {hasSelection && (
                 <>
                   <div className="w-px h-4 bg-slate-700 mx-1" />
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium text-slate-200">
-                      {selectedIds.size} selected
-                    </span>
-                    <button
-                      onClick={() => setSelectedIds(new Set())}
-                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                    >
-                      Clear
-                    </button>
-                    <button
-                      onClick={toggleSelectAll}
-                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
-                    >
-                      {allVisibleSelected ? 'Deselect all' : 'Select all'}
-                    </button>
-                  </div>
+                  <span className="text-xs font-medium text-slate-200">
+                    {selectedIds.size} selected
+                  </span>
+                  <button
+                    onClick={() => setSelectedIds(new Set())}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={toggleSelectAll}
+                    className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                  >
+                    {allVisibleSelected ? 'Deselect all' : 'Select all'}
+                  </button>
                 </>
               )}
-
-              <div className="flex-1" />
-
-              {/* Right: bulk actions when selected */}
-              {hasSelection && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  {selDownloadable > 0 && (
-                    <button
-                      onClick={handleBulkDownload}
-                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
-                    >
-                      <Download size={13} />
-                      Download ({selDownloadable})
-                    </button>
-                  )}
-
-                  {selRedownloadable > 0 && (
-                    <button
-                      onClick={handleBulkRedownload}
-                      className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
-                    >
-                      <RefreshCw size={13} />
-                      Re-download ({selRedownloadable})
-                    </button>
-                  )}
-
-                  {selTranscribable > 0 && (
-                    <>
-                      <select
-                        value={transcribeModel}
-                        onChange={e => setTranscribeModel(e.target.value)}
-                        className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
-                      >
-                        <optgroup label="Remote">
-                          <option value="cloud">Cloud auto (Groq → Modal)</option>
-                          <option value="groq">Groq cloud (fast)</option>
-                          <option value="modal">Modal GPU (no limits)</option>
-                        </optgroup>
-                        <optgroup label="Local">
-                          <option value="tiny">tiny (fastest)</option>
-                          <option value="base">base</option>
-                          <option value="small">small</option>
-                          <option value="turbo">turbo (best quality)</option>
-                        </optgroup>
-                      </select>
-                      <button
-                        onClick={handleBulkTranscribe}
-                        className="flex items-center gap-1.5 bg-violet-700 hover:bg-violet-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
-                      >
-                        <Mic size={13} />
-                        Transcribe ({selTranscribable})
-                      </button>
-                    </>
-                  )}
-
-                  {selNotesReady > 0 && (
-                    <>
-                      <select
-                        value={notesModel}
-                        onChange={e => setNotesModel(e.target.value)}
-                        className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-500"
-                      >
-                        <option value="auto">Auto (free first)</option>
-                        <optgroup label="Free">
-                          <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
-                          <option value="openrouter/google/gemma-3-27b-it:free">Gemma 3 27B</option>
-                          <option value="openrouter/mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1</option>
-                          <option value="openrouter/qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
-                          <option value="openrouter/deepseek/deepseek-r1-0528:free">DeepSeek R1</option>
-                          <option value="openrouter/nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 405B</option>
-                        </optgroup>
-                        <optgroup label="Cheap">
-                          <option value="openrouter/google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
-                          <option value="openrouter/minimax/minimax-m2.1">MiniMax M2.1</option>
-                        </optgroup>
-                        <optgroup label="Paid">
-                          <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-                          <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
-                          <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
-                        </optgroup>
-                      </select>
-                      <button
-                        onClick={handleBulkGenerateNotes}
-                        className="flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
-                      >
-                        <Sparkles size={13} />
-                        Notes ({selNotesReady})
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
+
+            {/* Action row: bulk actions when selected */}
+            {hasSelection && (
+              <div className="flex items-center gap-2 flex-wrap">
+                {selDownloadable > 0 && (
+                  <button
+                    onClick={handleBulkDownload}
+                    className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                  >
+                    <Download size={13} />
+                    Download ({selDownloadable})
+                  </button>
+                )}
+
+                {selRedownloadable > 0 && (
+                  <button
+                    onClick={handleBulkRedownload}
+                    className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                  >
+                    <RefreshCw size={13} />
+                    Re-download ({selRedownloadable})
+                  </button>
+                )}
+
+                {selTranscribable > 0 && (
+                  <>
+                    <div className="w-px h-4 bg-slate-700" />
+                    <select
+                      value={transcribeModel}
+                      onChange={e => setTranscribeModel(e.target.value)}
+                      className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
+                    >
+                      <optgroup label="Remote">
+                        <option value="cloud">Cloud auto (Groq → Modal)</option>
+                        <option value="groq">Groq cloud (fast)</option>
+                        <option value="groq:whisper-large-v3">Groq large-v3 (best)</option>
+                        <option value="modal">Modal GPU (no limits)</option>
+                      </optgroup>
+                      <optgroup label="Local">
+                        <option value="tiny">tiny (fastest)</option>
+                        <option value="base">base</option>
+                        <option value="small">small</option>
+                        <option value="turbo">turbo (best quality)</option>
+                      </optgroup>
+                    </select>
+                    <button
+                      onClick={handleBulkTranscribe}
+                      className="flex items-center gap-1.5 bg-violet-700 hover:bg-violet-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                    >
+                      <Mic size={13} />
+                      Transcribe ({selTranscribable})
+                    </button>
+                  </>
+                )}
+
+                {selNotesReady > 0 && (
+                  <>
+                    <div className="w-px h-4 bg-slate-700" />
+                    <select
+                      value={notesModel}
+                      onChange={e => setNotesModel(e.target.value)}
+                      className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-500"
+                    >
+                      <option value="auto">Auto (free first)</option>
+                      <optgroup label="Free">
+                        <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+                        <option value="openrouter/google/gemma-3-27b-it:free">Gemma 3 27B</option>
+                        <option value="openrouter/mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1</option>
+                        <option value="openrouter/qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
+                        <option value="openrouter/deepseek/deepseek-r1-0528:free">DeepSeek R1</option>
+                        <option value="openrouter/nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 405B</option>
+                      </optgroup>
+                      <optgroup label="Cheap">
+                        <option value="openrouter/google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                        <option value="openrouter/minimax/minimax-m2.1">MiniMax M2.1</option>
+                      </optgroup>
+                      <optgroup label="Paid">
+                        <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+                        <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
+                        <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
+                      </optgroup>
+                    </select>
+                    <button
+                      onClick={handleBulkGenerateNotes}
+                      className="flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                    >
+                      <Sparkles size={13} />
+                      Notes ({selNotesReady})
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
           </div>
 
           {lectures.length === 0 ? (

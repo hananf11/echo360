@@ -107,11 +107,9 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
     setPlaying(!playing)
   }
 
-  const cycleSpeed = () => {
-    const speeds = [1, 1.25, 1.5, 1.75, 2, 2.5, 3]
-    const next = speeds[(speeds.indexOf(playbackRate) + 1) % speeds.length]
-    setPlaybackRate(next)
-    if (audioRef.current) audioRef.current.playbackRate = next
+  const changeSpeed = (rate: number) => {
+    setPlaybackRate(rate)
+    if (audioRef.current) audioRef.current.playbackRate = rate
   }
 
   const handleProgressClick = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -167,19 +165,28 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
                 {playing ? <Pause size={16} /> : <Play size={16} className="ml-0.5" />}
               </button>
 
-              <span className="text-xs font-mono text-slate-400 min-w-[100px]">
+              <span className="text-xs font-mono text-slate-400">
                 {formatTime(currentTime)} <span className="text-slate-600">/</span> {formatTime(duration)}
+                {playbackRate !== 1 && (
+                  <span className="text-slate-600"> ({formatTime(duration / playbackRate)})</span>
+                )}
               </span>
 
               <div className="flex-1" />
 
-              <button
-                onClick={cycleSpeed}
-                className="px-2 py-1 rounded-md text-xs font-mono font-medium text-slate-400 hover:text-white bg-slate-700/50 hover:bg-slate-700 transition-colors min-w-[3.5rem] text-center"
-                title="Playback speed"
-              >
-                {playbackRate}x
-              </button>
+              <span className="text-[11px] font-mono text-slate-500">
+                {formatTime((duration - currentTime) / playbackRate)} left
+              </span>
+              <select
+                  value={playbackRate}
+                  onChange={e => changeSpeed(parseFloat(e.target.value))}
+                  className="px-1.5 py-1 rounded-md text-xs font-mono font-medium text-slate-400 bg-slate-700/50 hover:bg-slate-700 border-none outline-none cursor-pointer transition-colors appearance-none text-center"
+                  title="Playback speed"
+                >
+                  {[0.5, 0.75, 1, 1.25, 1.5, 1.75, 2, 2.5, 3].map(s => (
+                    <option key={s} value={s}>{s}x</option>
+                  ))}
+                </select>
             </div>
           </div>
 
