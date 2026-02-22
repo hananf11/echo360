@@ -1,7 +1,6 @@
 import { useState } from 'react'
-import { Download, CheckCircle, AlertCircle, Clock, Mic, Play, Pause, Ban, Sparkles } from 'lucide-react'
+import { CheckCircle, AlertCircle, Clock, Play, Pause, Ban, ExternalLink } from 'lucide-react'
 import { format } from 'timeago.js'
-import { downloadLecture, transcribeLecture, generateNotes } from '../api'
 import type { Lecture, SSEMessage } from '../types'
 import LecturePlayer from './LecturePlayer'
 
@@ -44,9 +43,10 @@ function formatDate(dateStr: string): string {
 
 interface Props {
   lecture: Lecture
+  hostname: string
   isLast: boolean
-  transcribeModel?: string
-  notesModel?: string
+  selected: boolean
+  onToggle: (id: number) => void
   progress?: SSEMessage['progress']
 }
 
@@ -158,7 +158,7 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
   )
 }
 
-export default function LectureRow({ lecture, isLast, transcribeModel = 'modal', notesModel = 'auto', progress }: Props) {
+export default function LectureRow({ lecture, hostname, isLast, selected, onToggle, progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
 
   const hasTranscript = lecture.transcript_status === 'done'
@@ -170,10 +170,20 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
       <tr
         className={`hover:bg-slate-700/30 transition-colors ${
           !isLast && !playerOpen ? 'border-b border-slate-700/40' : ''
-        }`}
+        } ${selected ? 'bg-indigo-500/5' : ''}`}
       >
+        {/* Checkbox */}
+        <td className="pl-4 pr-1 py-3 w-8">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggle(lecture.id)}
+            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+          />
+        </td>
+
         {/* Date */}
-        <td className="px-5 py-3 whitespace-nowrap">
+        <td className="px-4 py-3 whitespace-nowrap">
           <span className="font-mono text-xs text-slate-500">{formatDate(lecture.date)}</span>
           <span className="text-[10px] text-slate-600 ml-1.5">{format(lecture.date)}</span>
         </td>
@@ -200,30 +210,18 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
 
         {/* Actions */}
         <td className="px-4 py-3">
-          <div className="flex items-center justify-end gap-1.5">
-            {/* Generate notes button */}
-            {hasTranscript && (lecture.notes_status === 'pending' || lecture.notes_status === 'error') && (
-              <button
-                onClick={() => generateNotes(lecture.id, notesModel)}
-                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-amber-600 text-slate-500 hover:text-white transition-colors"
-                title="Generate notes"
+          <div className="flex items-center justify-end gap-1">
+            {hostname && (
+              <a
+                href={`${hostname}/lesson/${lecture.echo_id}/classroom`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-1.5 rounded-md transition-colors bg-slate-700/50 hover:bg-slate-600 text-slate-500 hover:text-white"
+                title="Open in Echo360"
               >
-                <Sparkles size={13} />
-              </button>
+                <ExternalLink size={13} />
+              </a>
             )}
-
-            {/* Transcribe button */}
-            {canPlay && (lecture.transcript_status === 'pending' || lecture.transcript_status === 'error') && (
-              <button
-                onClick={() => transcribeLecture(lecture.id, transcribeModel)}
-                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-violet-600 text-slate-500 hover:text-white transition-colors"
-                title="Transcribe audio"
-              >
-                <Mic size={13} />
-              </button>
-            )}
-
-            {/* Play / expand button */}
             {canPlay && (
               <button
                 onClick={() => setPlayerOpen(o => !o)}
@@ -235,17 +233,6 @@ export default function LectureRow({ lecture, isLast, transcribeModel = 'modal',
                 title={playerOpen ? 'Hide player' : 'Play audio'}
               >
                 {playerOpen ? <Pause size={13} /> : <Play size={13} />}
-              </button>
-            )}
-
-            {/* Download button */}
-            {(lecture.audio_status === 'pending' || lecture.audio_status === 'error') && (
-              <button
-                onClick={() => downloadLecture(lecture.id)}
-                className="p-1.5 rounded-md bg-slate-700/50 hover:bg-indigo-600 text-slate-500 hover:text-white transition-colors"
-                title="Download audio"
-              >
-                <Download size={13} />
               </button>
             )}
           </div>

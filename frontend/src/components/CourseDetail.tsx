@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { ArrowLeft, Download, Mic, Sparkles, Wand2, Check, X, CalendarClock } from 'lucide-react'
-import { getCourse, getLectures, downloadAll, transcribeAll, generateNotesAll, fixTitles, updateCourseDisplayName } from '../api'
+import { ArrowLeft, Download, RefreshCw, Mic, Sparkles, Wand2, Check, X, CalendarClock, ExternalLink } from 'lucide-react'
+import { getCourse, getLectures, fixTitles, updateCourseDisplayName, syncCourse, bulkDownload, bulkRedownload, bulkTranscribe, bulkGenerateNotes } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import LectureRow from './LectureRow'
@@ -22,9 +22,6 @@ export default function CourseDetail() {
   const [course, setCourse] = useState<Course | null>(null)
   const [lectures, setLectures] = useState<Lecture[]>([])
   const [loading, setLoading] = useState(true)
-  const [queuedCount, setQueuedCount] = useState<number | null>(null)
-  const [transcribeQueuedCount, setTranscribeQueuedCount] = useState<number | null>(null)
-  const [notesQueuedCount, setNotesQueuedCount] = useState<number | null>(null)
   const [transcribeModel, setTranscribeModel] = useState('modal')
   const [notesModel, setNotesModel] = useState('auto')
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
@@ -32,6 +29,7 @@ export default function CourseDetail() {
   const [editName, setEditName] = useState('')
   const [fixingTitles, setFixingTitles] = useState(false)
   const [showFuture, setShowFuture] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
@@ -41,6 +39,9 @@ export default function CourseDetail() {
 
   useEffect(() => { load() }, [load])
 
+  // Clear selection on navigation (courseId change)
+  useEffect(() => { setSelectedIds(new Set()) }, [courseId])
+
   const handleSSE = useCallback((msg: SSEMessage) => {
 
     if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
@@ -49,11 +50,9 @@ export default function CourseDetail() {
           prev.map(l => {
             if (l.id !== msg.lecture_id) return l
             const update: Partial<Lecture> = {}
-            // Audio statuses
             if (['downloading', 'downloaded', 'converting', 'done', 'error', 'pending', 'queued'].includes(msg.status!)) {
               update.audio_status = msg.status as Lecture['audio_status']
             }
-            // Transcription status from lecture_update
             if (msg.status === 'transcribing') {
               update.transcript_status = 'transcribing'
             }
@@ -65,11 +64,9 @@ export default function CourseDetail() {
           })
         )
       }
-      // Track progress for all active stages
       if (msg.progress && msg.lecture_id !== undefined) {
         setProgressMap(prev => ({ ...prev, [msg.lecture_id!]: msg.progress! }))
       }
-      // Clear progress on terminal states
       if (msg.status && TERMINAL_STATUSES.has(msg.status) && msg.lecture_id !== undefined) {
         setProgressMap(prev => {
           const next = { ...prev }
@@ -165,24 +162,13 @@ export default function CourseDetail() {
 
   useSSE(handleSSE)
 
-  const handleDownloadAll = async () => {
-    const result = await downloadAll(courseId)
-    setQueuedCount(result.queued)
-  }
-
-  const handleTranscribeAll = async () => {
-    const result = await transcribeAll(courseId, transcribeModel)
-    setTranscribeQueuedCount(result.queued)
-  }
-
-  const handleGenerateNotesAll = async () => {
-    const result = await generateNotesAll(courseId, notesModel)
-    setNotesQueuedCount(result.queued)
-  }
-
   const handleFixTitles = async () => {
     setFixingTitles(true)
     await fixTitles(courseId)
+  }
+
+  const handleSync = async () => {
+    await syncCourse(courseId)
   }
 
   const handleSaveDisplayName = async () => {
@@ -192,34 +178,17 @@ export default function CourseDetail() {
     setEditingName(false)
   }
 
-  const pendingCount = lectures.filter(
-    l => l.audio_status === 'pending' || l.audio_status === 'error'
-  ).length
+  // Selection helpers
+  const toggleSelection = useCallback((id: number) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }, [])
 
-  const noMediaCount = lectures.filter(l => l.audio_status === 'no_media').length
-  const effectiveCount = lectures.length - noMediaCount
-  const doneCount = lectures.filter(l => l.audio_status === 'done').length
-  const transcribedCount = lectures.filter(l => l.transcript_status === 'done').length
-  const pendingTranscriptCount = lectures.filter(
-    l =>
-      l.audio_status === 'done' &&
-      (l.transcript_status === 'pending' || l.transcript_status === 'error')
-  ).length
-  const notesReadyCount = lectures.filter(l => l.notes_status === 'done').length
-  const pendingNotesCount = lectures.filter(
-    l =>
-      l.transcript_status === 'done' &&
-      (l.notes_status === 'pending' || l.notes_status === 'error')
-  ).length
-
-  const displayName = course?.display_name || course?.name || ''
-  const [title, code] = splitCourseCode(displayName)
-
-  const allDownloaded = effectiveCount > 0 && doneCount >= effectiveCount
-  const allTranscribed = effectiveCount > 0 && transcribedCount >= effectiveCount
-  const allNotes = effectiveCount > 0 && notesReadyCount >= effectiveCount
-
-  // Filter out future lectures (date > tomorrow) by default
+  // Filter out future lectures
   const tomorrow = useMemo(() => {
     const d = new Date()
     d.setDate(d.getDate() + 1)
@@ -228,6 +197,63 @@ export default function CourseDetail() {
 
   const futureLectureCount = lectures.filter(l => l.date > tomorrow).length
   const visibleLectures = showFuture ? lectures : lectures.filter(l => l.date <= tomorrow)
+
+  const allVisibleSelected = visibleLectures.length > 0 && visibleLectures.every(l => selectedIds.has(l.id))
+
+  const toggleSelectAll = useCallback(() => {
+    if (allVisibleSelected) {
+      setSelectedIds(new Set())
+    } else {
+      setSelectedIds(new Set(visibleLectures.map(l => l.id)))
+    }
+  }, [allVisibleSelected, visibleLectures])
+
+  // Derive selected lectures info for the bulk action bar
+  const selectedLectures = useMemo(
+    () => lectures.filter(l => selectedIds.has(l.id)),
+    [lectures, selectedIds]
+  )
+
+  const selDownloadable = selectedLectures.filter(l => l.audio_status === 'pending' || l.audio_status === 'error').length
+  const selRedownloadable = selectedLectures.filter(l => l.audio_status === 'done').length
+  const selTranscribable = selectedLectures.filter(l => l.audio_status === 'done' && (l.transcript_status === 'pending' || l.transcript_status === 'error')).length
+  const selNotesReady = selectedLectures.filter(l => l.transcript_status === 'done' && (l.notes_status === 'pending' || l.notes_status === 'error')).length
+
+  const handleBulkDownload = async () => {
+    const ids = selectedLectures.filter(l => l.audio_status === 'pending' || l.audio_status === 'error').map(l => l.id)
+    await bulkDownload(ids)
+  }
+
+  const handleBulkRedownload = async () => {
+    const ids = selectedLectures.filter(l => l.audio_status === 'done').map(l => l.id)
+    await bulkRedownload(ids)
+  }
+
+  const handleBulkTranscribe = async () => {
+    const ids = selectedLectures.filter(l => l.audio_status === 'done' && (l.transcript_status === 'pending' || l.transcript_status === 'error')).map(l => l.id)
+    await bulkTranscribe(ids, transcribeModel)
+  }
+
+  const handleBulkGenerateNotes = async () => {
+    const ids = selectedLectures.filter(l => l.transcript_status === 'done' && (l.notes_status === 'pending' || l.notes_status === 'error')).map(l => l.id)
+    await bulkGenerateNotes(ids, notesModel)
+  }
+
+  // Stats
+  const noMediaCount = lectures.filter(l => l.audio_status === 'no_media').length
+  const effectiveCount = lectures.length - noMediaCount
+  const doneCount = lectures.filter(l => l.audio_status === 'done').length
+  const transcribedCount = lectures.filter(l => l.transcript_status === 'done').length
+  const notesReadyCount = lectures.filter(l => l.notes_status === 'done').length
+
+  const displayName = course?.display_name || course?.name || ''
+  const [title, code] = splitCourseCode(displayName)
+
+  const allDownloaded = effectiveCount > 0 && doneCount >= effectiveCount
+  const allTranscribed = effectiveCount > 0 && transcribedCount >= effectiveCount
+  const allNotes = effectiveCount > 0 && notesReadyCount >= effectiveCount
+
+  const hasSelection = selectedIds.size > 0
 
   return (
     <div className="max-w-6xl mx-auto px-6 py-10">
@@ -275,6 +301,17 @@ export default function CourseDetail() {
               )}
               {course?.display_name && (
                 <p className="text-slate-600 text-xs mt-0.5">{course.name}</p>
+              )}
+              {course?.url && (
+                <a
+                  href={course.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-xs text-slate-500 hover:text-indigo-400 transition-colors mt-1"
+                >
+                  <ExternalLink size={11} />
+                  Open in Echo360
+                </a>
               )}
 
               {/* Stats row */}
@@ -326,108 +363,149 @@ export default function CourseDetail() {
               </div>
             </div>
 
-            {/* Action buttons */}
-            <div className="flex items-center gap-2 flex-wrap justify-end">
-              <button
-                onClick={handleFixTitles}
-                disabled={fixingTitles}
-                className="flex items-center gap-2 bg-slate-700/60 hover:bg-slate-600 text-slate-400 hover:text-white px-3 py-2 rounded-lg transition-colors text-sm disabled:opacity-40"
-                title="Use AI to clean up course and lecture titles"
-              >
-                <Wand2 size={15} className={fixingTitles ? 'animate-spin' : ''} />
-                <span className="hidden xl:inline">{fixingTitles ? 'Fixing…' : 'Fix Titles'}</span>
-              </button>
-              {pendingNotesCount > 0 && (
-                <>
-                  <select
-                    value={notesModel}
-                    onChange={e => setNotesModel(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-amber-500"
-                  >
-                    <option value="auto">Auto (free first)</option>
-                    <optgroup label="Free">
-                      <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
-                      <option value="openrouter/google/gemma-3-27b-it:free">Gemma 3 27B</option>
-                      <option value="openrouter/mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1</option>
-                      <option value="openrouter/qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
-                      <option value="openrouter/deepseek/deepseek-r1-0528:free">DeepSeek R1</option>
-                      <option value="openrouter/nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 405B</option>
-                    </optgroup>
-                    <optgroup label="Cheap">
-                      <option value="openrouter/google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
-                      <option value="openrouter/minimax/minimax-m2.1">MiniMax M2.1</option>
-                    </optgroup>
-                    <optgroup label="Paid">
-                      <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
-                      <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
-                      <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
-                    </optgroup>
-                  </select>
-                  <button
-                    onClick={handleGenerateNotesAll}
-                    className="flex items-center gap-2 bg-amber-700 hover:bg-amber-600 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
-                  >
-                    <Sparkles size={15} />
-                    Notes ({pendingNotesCount})
-                  </button>
-                </>
-              )}
-              {pendingTranscriptCount > 0 && (
-                <>
-                  <select
-                    value={transcribeModel}
-                    onChange={e => setTranscribeModel(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 text-slate-300 text-xs rounded-lg px-2 py-2 focus:outline-none focus:border-violet-500"
-                  >
-                    <optgroup label="Remote">
-                      <option value="cloud">Cloud auto (Groq → Modal)</option>
-                      <option value="groq">Groq cloud (fast)</option>
-                      <option value="modal">Modal GPU (no limits)</option>
-                    </optgroup>
-                    <optgroup label="Local">
-                      <option value="tiny">tiny (fastest)</option>
-                      <option value="base">base</option>
-                      <option value="small">small</option>
-                      <option value="turbo">turbo (best quality)</option>
-                    </optgroup>
-                  </select>
-                  <button
-                    onClick={handleTranscribeAll}
-                    className="flex items-center gap-2 bg-violet-700 hover:bg-violet-600 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
-                  >
-                    <Mic size={15} />
-                    Transcribe ({pendingTranscriptCount})
-                  </button>
-                </>
-              )}
-              {pendingCount > 0 && (
+          </div>
+
+          {/* Toolbar — sticky, matches card theming */}
+          <div className="sticky top-0 z-40 bg-slate-800/70 rounded-xl border border-slate-700/50 px-4 py-2.5 mb-4 backdrop-blur-sm">
+            <div className="flex items-center gap-2 min-h-[28px]">
+              {/* Left: always Sync + Fix Titles */}
+              <div className="flex items-center gap-1.5">
                 <button
-                  onClick={handleDownloadAll}
-                  className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-2 rounded-lg transition-colors text-sm font-medium whitespace-nowrap"
+                  onClick={handleSync}
+                  className="flex items-center gap-1.5 text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-slate-700/60 transition-colors text-xs"
+                  title="Re-sync lectures from Echo360"
                 >
-                  <Download size={15} />
-                  Download ({pendingCount})
+                  <RefreshCw size={13} />
+                  Sync
                 </button>
+                <button
+                  onClick={handleFixTitles}
+                  disabled={fixingTitles}
+                  className="flex items-center gap-1.5 text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-slate-700/60 transition-colors text-xs disabled:opacity-40"
+                  title="Use AI to clean up course and lecture titles"
+                >
+                  <Wand2 size={13} className={fixingTitles ? 'animate-spin' : ''} />
+                  {fixingTitles ? 'Fixing...' : 'Fix Titles'}
+                </button>
+              </div>
+
+              {/* Separator + selection info when active */}
+              {hasSelection && (
+                <>
+                  <div className="w-px h-4 bg-slate-700 mx-1" />
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium text-slate-200">
+                      {selectedIds.size} selected
+                    </span>
+                    <button
+                      onClick={() => setSelectedIds(new Set())}
+                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      Clear
+                    </button>
+                    <button
+                      onClick={toggleSelectAll}
+                      className="text-xs text-slate-500 hover:text-slate-300 transition-colors"
+                    >
+                      {allVisibleSelected ? 'Deselect all' : 'Select all'}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              <div className="flex-1" />
+
+              {/* Right: bulk actions when selected */}
+              {hasSelection && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  {selDownloadable > 0 && (
+                    <button
+                      onClick={handleBulkDownload}
+                      className="flex items-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                    >
+                      <Download size={13} />
+                      Download ({selDownloadable})
+                    </button>
+                  )}
+
+                  {selRedownloadable > 0 && (
+                    <button
+                      onClick={handleBulkRedownload}
+                      className="flex items-center gap-1.5 bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                    >
+                      <RefreshCw size={13} />
+                      Re-download ({selRedownloadable})
+                    </button>
+                  )}
+
+                  {selTranscribable > 0 && (
+                    <>
+                      <select
+                        value={transcribeModel}
+                        onChange={e => setTranscribeModel(e.target.value)}
+                        className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
+                      >
+                        <optgroup label="Remote">
+                          <option value="cloud">Cloud auto (Groq → Modal)</option>
+                          <option value="groq">Groq cloud (fast)</option>
+                          <option value="modal">Modal GPU (no limits)</option>
+                        </optgroup>
+                        <optgroup label="Local">
+                          <option value="tiny">tiny (fastest)</option>
+                          <option value="base">base</option>
+                          <option value="small">small</option>
+                          <option value="turbo">turbo (best quality)</option>
+                        </optgroup>
+                      </select>
+                      <button
+                        onClick={handleBulkTranscribe}
+                        className="flex items-center gap-1.5 bg-violet-700 hover:bg-violet-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                      >
+                        <Mic size={13} />
+                        Transcribe ({selTranscribable})
+                      </button>
+                    </>
+                  )}
+
+                  {selNotesReady > 0 && (
+                    <>
+                      <select
+                        value={notesModel}
+                        onChange={e => setNotesModel(e.target.value)}
+                        className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-500"
+                      >
+                        <option value="auto">Auto (free first)</option>
+                        <optgroup label="Free">
+                          <option value="openrouter/meta-llama/llama-3.3-70b-instruct:free">Llama 3.3 70B</option>
+                          <option value="openrouter/google/gemma-3-27b-it:free">Gemma 3 27B</option>
+                          <option value="openrouter/mistralai/mistral-small-3.1-24b-instruct:free">Mistral Small 3.1</option>
+                          <option value="openrouter/qwen/qwen3-next-80b-a3b-instruct:free">Qwen3 Next 80B</option>
+                          <option value="openrouter/deepseek/deepseek-r1-0528:free">DeepSeek R1</option>
+                          <option value="openrouter/nousresearch/hermes-3-llama-3.1-405b:free">Hermes 3 405B</option>
+                        </optgroup>
+                        <optgroup label="Cheap">
+                          <option value="openrouter/google/gemini-2.5-flash-lite">Gemini 2.5 Flash Lite</option>
+                          <option value="openrouter/minimax/minimax-m2.1">MiniMax M2.1</option>
+                        </optgroup>
+                        <optgroup label="Paid">
+                          <option value="openrouter/meta-llama/llama-3.3-70b-instruct">Llama 3.3 70B</option>
+                          <option value="openrouter/anthropic/claude-sonnet-4">Claude Sonnet</option>
+                          <option value="openrouter/openai/gpt-4o-mini">GPT-4o Mini</option>
+                        </optgroup>
+                      </select>
+                      <button
+                        onClick={handleBulkGenerateNotes}
+                        className="flex items-center gap-1.5 bg-amber-700 hover:bg-amber-600 text-white px-3 py-1.5 rounded-lg transition-colors text-xs font-medium"
+                      >
+                        <Sparkles size={13} />
+                        Notes ({selNotesReady})
+                      </button>
+                    </>
+                  )}
+                </div>
               )}
             </div>
           </div>
-
-          {/* Queue notifications */}
-          {queuedCount !== null && (
-            <p className="text-sm text-indigo-400 mb-4">
-              {queuedCount} download{queuedCount !== 1 ? 's' : ''} queued.
-            </p>
-          )}
-          {transcribeQueuedCount !== null && (
-            <p className="text-sm text-violet-400 mb-4">
-              {transcribeQueuedCount} transcription{transcribeQueuedCount !== 1 ? 's' : ''} queued.
-            </p>
-          )}
-          {notesQueuedCount !== null && (
-            <p className="text-sm text-amber-400 mb-4">
-              {notesQueuedCount} note generation{notesQueuedCount !== 1 ? 's' : ''} queued.
-            </p>
-          )}
 
           {lectures.length === 0 ? (
             <p className="text-slate-500 text-sm py-8 text-center">
@@ -442,13 +520,31 @@ export default function CourseDetail() {
                   return groups
                 }, {})
               )
-                .sort(([a], [b]) => b.localeCompare(a))
+                .sort(([a], [b]) => a.localeCompare(b))
                 .map(([year, group]) => {
-                  const sorted = [...group].sort((a, b) => b.date.localeCompare(a.date))
+                  const sorted = [...group].sort((a, b) => a.date.localeCompare(b.date))
+                  const groupIds = sorted.map(l => l.id)
+                  const allGroupSelected = groupIds.every(id => selectedIds.has(id))
                   return (
                   <div key={year} className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
                     <div className="px-5 py-2.5 border-b border-slate-700/50">
                       <div className="flex items-center gap-3">
+                        <input
+                          type="checkbox"
+                          checked={allGroupSelected}
+                          onChange={() => {
+                            setSelectedIds(prev => {
+                              const next = new Set(prev)
+                              if (allGroupSelected) {
+                                groupIds.forEach(id => next.delete(id))
+                              } else {
+                                groupIds.forEach(id => next.add(id))
+                              }
+                              return next
+                            })
+                          }}
+                          className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
+                        />
                         <span className="text-sm font-bold text-slate-300">{year}</span>
                         <span className="text-xs text-slate-500">{group.length} lecture{group.length !== 1 ? 's' : ''}</span>
                       </div>
@@ -459,9 +555,10 @@ export default function CourseDetail() {
                           <LectureRow
                             key={lecture.id}
                             lecture={lecture}
+                            hostname={course?.hostname ?? ''}
                             isLast={i === sorted.length - 1}
-                            transcribeModel={transcribeModel}
-                            notesModel={notesModel}
+                            selected={selectedIds.has(lecture.id)}
+                            onToggle={toggleSelection}
                             progress={progressMap[lecture.id]}
                           />
                         ))}
@@ -486,6 +583,7 @@ export default function CourseDetail() {
               )}
             </div>
           )}
+
         </>
       )}
     </div>
