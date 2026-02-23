@@ -1,4 +1,4 @@
-import type { Course, Lecture, Note, Transcript } from './types'
+import type { Course, Lecture, Note, Transcript, PipelineStatus, PipelineConfig } from './types'
 
 const BASE = '/api'
 
@@ -164,4 +164,30 @@ export const updateCourseDisplayName = (courseId: number, displayName: string | 
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ display_name: displayName }),
+  }).then(r => _json(r))
+
+// ── Pipeline ──────────────────────────────────────────────────────────────────
+
+export const getPipelineStatus = (): Promise<PipelineStatus[]> =>
+  fetch(`${BASE}/pipeline/status`).then(r => _json(r))
+
+export const runLecturePipeline = (id: number, config?: PipelineConfig): Promise<{ status: string }> =>
+  fetch(`${BASE}/lectures/${id}/pipeline`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config ?? {}),
+  }).then(r => _json(r))
+
+export const runCoursePipeline = (courseId: number, config?: PipelineConfig): Promise<{ queued: number }> =>
+  fetch(`${BASE}/courses/${courseId}/pipeline`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config ?? {}),
+  }).then(r => _json(r))
+
+export const runGlobalPipeline = (config?: PipelineConfig): Promise<{ queued: number }> =>
+  fetch(`${BASE}/pipeline`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config ?? {}),
   }).then(r => _json(r))

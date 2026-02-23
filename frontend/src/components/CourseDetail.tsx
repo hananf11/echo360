@@ -325,6 +325,11 @@ export default function CourseDetail() {
                   Open in Echo360
                 </a>
               )}
+              {course?.last_synced_at && (
+                <p className="text-xs text-slate-600 mt-1">
+                  Last synced {new Date(course.last_synced_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                </p>
+              )}
 
               {/* Stats row */}
               <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -524,40 +529,19 @@ export default function CourseDetail() {
             </p>
           ) : (
             <div className="flex flex-col gap-6">
-              {Object.entries(
-                visibleLectures.reduce<Record<string, Lecture[]>>((groups, l) => {
-                  const year = l.date?.slice(0, 4) ?? 'Unknown'
-                  ;(groups[year] ??= []).push(l)
-                  return groups
-                }, {})
-              )
-                .sort(([a], [b]) => a.localeCompare(b))
-                .map(([year, group]) => {
-                  const sorted = [...group].sort((a, b) => a.date.localeCompare(b.date))
-                  const groupIds = sorted.map(l => l.id)
-                  const allGroupSelected = groupIds.every(id => selectedIds.has(id))
-                  return (
-                  <div key={year} className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
+              {(() => {
+                const sorted = [...visibleLectures].sort((a, b) => a.date.localeCompare(b.date))
+                return (
+                  <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
                     <div className="px-5 py-2.5 border-b border-slate-700/50">
                       <div className="flex items-center gap-3">
                         <input
                           type="checkbox"
-                          checked={allGroupSelected}
-                          onChange={() => {
-                            setSelectedIds(prev => {
-                              const next = new Set(prev)
-                              if (allGroupSelected) {
-                                groupIds.forEach(id => next.delete(id))
-                              } else {
-                                groupIds.forEach(id => next.add(id))
-                              }
-                              return next
-                            })
-                          }}
+                          checked={allVisibleSelected}
+                          onChange={toggleSelectAll}
                           className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
                         />
-                        <span className="text-sm font-bold text-slate-300">{year}</span>
-                        <span className="text-xs text-slate-500">{group.length} lecture{group.length !== 1 ? 's' : ''}</span>
+                        <span className="text-xs text-slate-500">{sorted.length} lecture{sorted.length !== 1 ? 's' : ''}</span>
                       </div>
                     </div>
                     <table className="w-full">
@@ -576,8 +560,8 @@ export default function CourseDetail() {
                       </tbody>
                     </table>
                   </div>
-                  )
-                })}
+                )
+              })()}
 
               {/* Future lectures toggle */}
               {futureLectureCount > 0 && (

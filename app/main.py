@@ -114,6 +114,14 @@ class BulkIdsRequest(BaseModel):
     model: str | None = None
 
 
+class PipelineRequest(BaseModel):
+    from_stage: str = "audio"
+    transcript_model: str = "groq"
+    notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
+    run_frames: bool = True
+    force: bool = False
+
+
 # ── Courses ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/courses")
@@ -725,6 +733,146 @@ def download_all_global():
         )
         jobs.enqueue_download(lec.id, course_dir)
     return {"queued": len(lectures)}
+
+
+# ── Pipeline ──────────────────────────────────────────────────────────────────
+
+def _course_dir_for(course_name: str) -> str:
+    return os.path.join(AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name))
+
+
+def _enqueue_lecture_pipeline(lecture_id: int, course_name: str, req: PipelineRequest) -> bool:
+    """Enqueue pipeline for a single lecture. Returns True if queued."""
+    if req.force:
+        jobs.reset_from_stage(lecture_id, req.from_stage)
+        from_stage = req.from_stage
+    else:
+        from_stage = jobs.get_first_incomplete_stage(lecture_id)
+        if from_stage is None:
+            return False  # All stages done
+
+    course_dir = _course_dir_for(course_name)
+    jobs.enqueue_pipeline(
+        lecture_id, course_dir,
+        from_stage=from_stage,
+        transcript_model=req.transcript_model,
+        notes_model=req.notes_model,
+        run_frames=req.run_frames,
+    )
+    return True
+
+
+@app.post("/api/lectures/{lecture_id}/pipeline")
+def run_lecture_pipeline(lecture_id: int, req: PipelineRequest | None = None):
+    if req is None:
+        req = PipelineRequest()
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        course_name = lec.course.name
+
+    queued = _enqueue_lecture_pipeline(lecture_id, course_name, req)
+    return {"status": "queued" if queued else "already_done"}
+
+
+@app.post("/api/courses/{course_id}/pipeline")
+def run_course_pipeline(course_id: int, req: PipelineRequest | None = None):
+    from datetime import date, timedelta
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    if req is None:
+        req = PipelineRequest()
+    with get_db() as session:
+        course = session.get(Course, course_id)
+        if not course:
+            raise HTTPException(404, "Course not found")
+        course_name = course.name
+        lectures = (
+            session.query(Lecture)
+            .filter(Lecture.course_id == course_id, Lecture.date <= tomorrow)
+            .all()
+        )
+        lecture_data = [(lec.id,) for lec in lectures]
+
+    queued = 0
+    for (lid,) in lecture_data:
+        if _enqueue_lecture_pipeline(lid, course_name, req):
+            queued += 1
+    return {"queued": queued}
+
+
+@app.post("/api/pipeline")
+def run_global_pipeline(req: PipelineRequest | None = None):
+    from datetime import date, timedelta
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    if req is None:
+        req = PipelineRequest()
+    with get_db() as session:
+        lectures = (
+            session.query(Lecture.id, Course.name.label("course_name"))
+            .join(Course, Lecture.course_id == Course.id)
+            .filter(Lecture.date <= tomorrow)
+            .all()
+        )
+
+    queued = 0
+    for lid, course_name in lectures:
+        if _enqueue_lecture_pipeline(lid, course_name, req):
+            queued += 1
+    return {"queued": queued}
+
+
+@app.get("/api/pipeline/status")
+def get_pipeline_status():
+    from datetime import date, timedelta
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
+    with get_db() as session:
+        courses = session.query(Course).order_by(Course.name).all()
+        result = []
+        for course in courses:
+            lectures = (
+                session.query(Lecture)
+                .filter(Lecture.course_id == course.id, Lecture.date <= tomorrow)
+                .order_by(Lecture.date.desc())
+                .all()
+            )
+            if not lectures:
+                continue
+
+            year = min((lec.date[:4] for lec in lectures if lec.date), default=None)
+            audio_done = sum(1 for l in lectures if l.audio_status == "done")
+            no_media = sum(1 for l in lectures if l.audio_status == "no_media")
+            transcript_done = sum(1 for l in lectures if l.transcript_status == "done")
+            notes_done = sum(1 for l in lectures if l.notes_status == "done")
+            frames_done = sum(1 for l in lectures if l.frames_status == "done")
+            error_count = sum(1 for l in lectures if l.error_message)
+            in_progress = sum(
+                1 for l in lectures
+                if l.audio_status in ("queued", "downloading", "downloaded", "converting")
+                or l.transcript_status in ("queued", "transcribing")
+                or l.notes_status in ("queued", "generating")
+                or l.frames_status in ("queued", "extracting")
+            )
+            result.append({
+                "course_id": course.id,
+                "course_name": course.name,
+                "display_name": course.display_name,
+                "year": year,
+                "total": len(lectures),
+                "audio_done": audio_done,
+                "no_media": no_media,
+                "transcript_done": transcript_done,
+                "notes_done": notes_done,
+                "frames_done": frames_done,
+                "error_count": error_count,
+                "in_progress": in_progress,
+                "lectures": [lec.to_dict() for lec in lectures],
+            })
+
+    return result
 
 
 # ── Storage stats ────────────────────────────────────────────────────────────

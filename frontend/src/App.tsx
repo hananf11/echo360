@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
-import { BrowserRouter, Routes, Route } from 'react-router-dom'
-import { ListOrdered } from 'lucide-react'
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
+import { ListOrdered, GitBranch } from 'lucide-react'
 import CourseLibrary from './components/CourseLibrary'
 import CourseDetail from './components/CourseDetail'
 import QueuePanel from './components/QueuePanel'
+import PipelineView from './components/PipelineView'
 import type { SSEMessage } from './types'
 import { useSSE } from './hooks/useSSE'
 
@@ -59,7 +60,14 @@ function AppContent() {
   return (
     <>
       <div className="min-h-screen bg-slate-900 text-slate-100">
-        {/* Fixed queue button */}
+        {/* Fixed bottom-right buttons */}
+        <Link
+          to="/pipeline"
+          className="fixed bottom-5 right-28 z-40 flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white px-4 py-2.5 rounded-full shadow-lg transition-colors text-sm font-medium"
+        >
+          <GitBranch size={16} />
+          Pipeline
+        </Link>
         <button
           onClick={() => setQueueOpen(true)}
           className="fixed bottom-5 right-5 z-40 flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white px-4 py-2.5 rounded-full shadow-lg transition-colors text-sm font-medium"
@@ -76,6 +84,7 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<CourseLibrary />} />
           <Route path="/courses/:id" element={<CourseDetail />} />
+          <Route path="/pipeline" element={<PipelineView />} />
         </Routes>
       </div>
 

@@ -2,11 +2,21 @@
 import asyncio
 import json
 import logging
+import os
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import AsyncIterator
 
 _LOGGER = logging.getLogger(__name__)
+
+STAGES = ["audio", "transcript", "notes", "frames"]
+STAGE_STATUS_FIELDS = {
+    "audio": "audio_status",
+    "transcript": "transcript_status",
+    "notes": "notes_status",
+    "frames": "frames_status",
+}
 
 _loop: asyncio.AbstractEventLoop | None = None
 _listeners: list[asyncio.Queue] = []
@@ -167,6 +177,108 @@ def enqueue_clean_titles(course_id: int) -> None:
 
     if _loop is not None and _notes_sem is not None:
         _schedule(_run())
+
+
+def enqueue_pipeline(lecture_id: int, output_dir: str, from_stage: str = "audio",
+                     transcript_model: str = "groq",
+                     notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct",
+                     run_frames: bool = True) -> None:
+    """Chain stages sequentially for one lecture, starting from from_stage."""
+
+    async def _run():
+        stages = STAGES[STAGES.index(from_stage):]
+        for stage in stages:
+            if stage == "frames" and not run_frames:
+                continue
+            await _run_stage(stage, lecture_id, output_dir, transcript_model, notes_model)
+            if not _stage_succeeded(lecture_id, stage):
+                return
+
+    if _loop is not None:
+        _schedule(_run())
+
+
+async def _run_stage(stage: str, lecture_id: int, output_dir: str,
+                     transcript_model: str, notes_model: str) -> None:
+    """Run a single pipeline stage, respecting its semaphore."""
+    if stage == "audio":
+        from app import pipeline
+        async with _download_sem:
+            try:
+                await pipeline.run_download(lecture_id, output_dir)
+            except Exception:
+                _LOGGER.exception("Pipeline download failed for lecture %d", lecture_id)
+    elif stage == "transcript":
+        from app import transcriber
+        is_local = transcript_model in _LOCAL_MODELS
+        sem = _transcribe_local_sem if is_local else _transcribe_remote_sem
+        async with sem:
+            try:
+                await transcriber.transcribe_lecture(lecture_id, transcript_model)
+            except Exception:
+                _LOGGER.exception("Pipeline transcription failed for lecture %d", lecture_id)
+    elif stage == "notes":
+        from app import note_generator
+        async with _notes_sem:
+            try:
+                await note_generator.generate_notes(lecture_id, notes_model)
+            except Exception:
+                _LOGGER.exception("Pipeline notes failed for lecture %d", lecture_id)
+    elif stage == "frames":
+        from app import frame_extractor
+        async with _notes_sem:
+            try:
+                await frame_extractor.extract_frames(lecture_id)
+            except Exception:
+                _LOGGER.exception("Pipeline frames failed for lecture %d", lecture_id)
+
+
+def _stage_succeeded(lecture_id: int, stage: str) -> bool:
+    """Check if a stage completed successfully."""
+    from app.database import get_db
+    from app.models import Lecture
+    field = STAGE_STATUS_FIELDS[stage]
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            return False
+        status = getattr(lec, field)
+        # For audio, "no_media" means we can't proceed
+        if stage == "audio" and status == "no_media":
+            return False
+        return status == "done"
+
+
+def reset_from_stage(lecture_id: int, from_stage: str) -> None:
+    """Reset status to 'pending' for the given stage and all downstream stages."""
+    from app.database import get_db
+    from app.models import Lecture
+    idx = STAGES.index(from_stage)
+    stages_to_reset = STAGES[idx:]
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            return
+        for stage in stages_to_reset:
+            setattr(lec, STAGE_STATUS_FIELDS[stage], "pending")
+        lec.error_message = None
+
+
+def get_first_incomplete_stage(lecture_id: int) -> str | None:
+    """Return the first stage that isn't 'done' (or 'no_media' for audio), or None if all done."""
+    from app.database import get_db
+    from app.models import Lecture
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            return None
+        for stage in STAGES:
+            status = getattr(lec, STAGE_STATUS_FIELDS[stage])
+            if stage == "audio" and status == "no_media":
+                return None  # Can't proceed without media
+            if status != "done":
+                return stage
+    return None
 
 
 def _schedule(coro) -> None:

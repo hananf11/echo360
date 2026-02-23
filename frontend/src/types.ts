@@ -48,6 +48,30 @@ export interface Note {
   created_at: string
 }
 
+export interface PipelineStatus {
+  course_id: number
+  course_name: string
+  display_name: string | null
+  year: string | null
+  total: number
+  audio_done: number
+  no_media: number
+  transcript_done: number
+  notes_done: number
+  frames_done: number
+  error_count: number
+  in_progress: number
+  lectures: Lecture[]
+}
+
+export interface PipelineConfig {
+  from_stage?: string
+  transcript_model?: string
+  notes_model?: string
+  run_frames?: boolean
+  force?: boolean
+}
+
 export interface SSEMessage {
   type: string
   course_id?: number
