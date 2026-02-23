@@ -100,6 +100,9 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
 
         jobs.broadcast({"type": "transcription_done", "lecture_id": lecture_id})
 
+        from app.outline_sync import sync_lecture_to_outline
+        sync_lecture_to_outline(lecture_id)
+
     except Exception as e:
         _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
         with get_db() as session:

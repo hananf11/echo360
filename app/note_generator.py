@@ -237,6 +237,9 @@ async def generate_notes(lecture_id: int, model: str) -> None:
 
         jobs.broadcast({"type": "notes_done", "lecture_id": lecture_id, "course_id": course_id})
 
+        from app.outline_sync import sync_lecture_to_outline
+        sync_lecture_to_outline(lecture_id)
+
     except Exception as e:
         _LOGGER.exception("Note generation failed for lecture %d", lecture_id)
         with get_db() as session:

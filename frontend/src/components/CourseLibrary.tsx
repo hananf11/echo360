@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
-import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic, Wand2, Check, Search, ChevronRight } from 'lucide-react'
-import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, fixTitles, type StorageStats } from '../api'
+import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic, Wand2, Check, Search, ChevronRight, Upload } from 'lucide-react'
+import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, fixTitles, pushYearToOutline, type StorageStats } from '../api'
 import type { Course, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
 import AddCourseModal from './AddCourseModal'
@@ -274,6 +274,14 @@ export default function CourseLibrary() {
                     </span>
                   </div>
                   <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => pushYearToOutline(year)}
+                      className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-emerald-400 hover:bg-slate-800 px-2.5 py-1.5 rounded-md transition-colors"
+                      title="Push transcripts & notes to Outline wiki"
+                    >
+                      <Upload size={12} />
+                      Push to Outline
+                    </button>
                     <button
                       onClick={() => group.forEach(c => transcribeAll(c.id))}
                       className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-violet-400 hover:bg-slate-800 px-2.5 py-1.5 rounded-md transition-colors"

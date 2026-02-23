@@ -901,6 +901,40 @@ def get_storage():
     }
 
 
+# ── Outline sync ─────────────────────────────────────────────────────────────
+
+
+@app.post("/api/outline/sync/{year}")
+def outline_sync_year(year: str):
+    """Sync all lectures from a given year that have transcripts or notes to Outline."""
+    from app.outline import OUTLINE_API_KEY
+    if not OUTLINE_API_KEY:
+        raise HTTPException(400, "OUTLINE_API_KEY is not set")
+
+    with get_db() as session:
+        lectures = (
+            session.query(Lecture)
+            .filter(
+                Lecture.date.startswith(year),
+                (Lecture.transcript_status == "done") | (Lecture.notes_status == "done"),
+            )
+            .all()
+        )
+        lecture_ids = [lec.id for lec in lectures]
+
+    if not lecture_ids:
+        return {"queued": 0, "message": f"No lectures with transcripts or notes in {year}"}
+
+    def _sync_year():
+        from app.outline_sync import sync_lecture_to_outline
+        for lid in lecture_ids:
+            sync_lecture_to_outline(lid)
+        jobs.broadcast({"type": "outline_sync_done", "year": year, "count": len(lecture_ids)})
+
+    jobs.submit(_sync_year)
+    return {"queued": len(lecture_ids), "year": year}
+
+
 # ── Queue status ─────────────────────────────────────────────────────────────
 
 @app.get("/api/queue")
