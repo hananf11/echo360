@@ -78,7 +78,10 @@ def _resolve_stream_url_chrome(video_json: dict, hostname: str) -> str | list[st
     from app.scraper import _build_driver, _load_session
 
     url = _extract_stream_url(video_json, hostname)
-    if url:
+    # Only short-circuit for direct MP4/S3 URLs (pre-signed strings).
+    # M3U8 URLs from raw_json are unsigned template paths that return 403 —
+    # they must go through Chrome so Echo360's JS can authenticate the session.
+    if isinstance(url, str):
         return url
 
     lesson_id = video_json.get("lesson", {}).get("lesson", {}).get("id")
@@ -112,25 +115,30 @@ def _resolve_stream_url_chrome(video_json: dict, hostname: str) -> str | list[st
 
             page = driver.page_source.replace("\\/", "/")
 
-            # Extract full content URLs including query params (auth tokens)
+            # Extract content URLs from page source
             all_urls = re.findall(r'https://content[^"\\]*', page)
             m3u8_urls = [u for u in all_urls if ".m3u8" in u]
             _LOGGER.info("Chrome attempt %d: found %d m3u8 URLs", attempt + 1, len(m3u8_urls))
 
             if m3u8_urls:
+                # Strip query params — signed tokens are bound to the Chrome
+                # session and won't work with httpx.  Cookie-based auth
+                # (matching the audio download path) works instead.
+                stripped = [u.split("?")[0] for u in m3u8_urls]
+
                 # Deduplicate preserving order
                 seen = set()
                 unique = []
-                for u in m3u8_urls:
+                for u in stripped:
                     if u not in seen:
                         seen.add(u)
                         unique.append(u)
 
                 # Prefer video-only for frame extraction (smaller downloads)
-                v_urls = [u for u in unique if "_v.m3u8" in u.split("?")[0]]
+                v_urls = [u for u in unique if "_v.m3u8" in u]
                 if v_urls:
                     return v_urls
-                av_urls = [u for u in unique if "_av.m3u8" in u.split("?")[0]]
+                av_urls = [u for u in unique if "_av.m3u8" in u]
                 if av_urls:
                     return av_urls
                 return unique
@@ -138,7 +146,7 @@ def _resolve_stream_url_chrome(video_json: dict, hostname: str) -> str | list[st
             # Try MP4
             mp4_urls = [u for u in all_urls if ".mp4" in u]
             if mp4_urls:
-                return mp4_urls[-1]
+                return mp4_urls[-1].split("?")[0]
 
             _LOGGER.warning("Chrome attempt %d: no video URLs found, retrying...", attempt + 1)
 
