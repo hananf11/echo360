@@ -216,7 +216,6 @@ def sync_course(course_id: int, course_url: str) -> None:
                 stmt = stmt.on_conflict_do_update(
                     index_elements=["course_id", "echo_id"],
                     set_={
-                        "title": stmt.excluded.title,
                         "date": stmt.excluded.date,
                         "raw_json": stmt.excluded.raw_json,
                         "duration_seconds": stmt.excluded.duration_seconds,
@@ -224,7 +223,7 @@ def sync_course(course_id: int, course_url: str) -> None:
                 )
                 session.execute(stmt)
 
-            # Reset no_media lectures whose raw_json now indicates media is available
+            # Reset no_media lectures whose raw_json now indicates media may be available
             no_media_lectures = (
                 session.query(Lecture)
                 .filter(Lecture.course_id == course_id, Lecture.audio_status == "no_media")
@@ -236,7 +235,11 @@ def sync_course(course_id: int, course_url: str) -> None:
                     lesson = data.get("lesson", data)
                     has_content = lesson.get("hasContent", False)
                     has_media = bool(lesson.get("medias"))
-                    if has_content or has_media:
+                    has_video = lesson.get("hasVideo", False)
+                    is_past = lesson.get("isPast", False)
+                    # Reset if media is now available, or if a previously-future
+                    # lecture is now past (let the download pipeline re-evaluate)
+                    if has_content or has_media or (is_past and has_video):
                         lec.audio_status = "pending"
                         lec.error_message = None
                 except (json.JSONDecodeError, TypeError):

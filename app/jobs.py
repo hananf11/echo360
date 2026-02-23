@@ -20,6 +20,7 @@ _notes_sem: asyncio.Semaphore | None = None
 
 _LOCAL_MODELS = {"tiny", "base", "small", "turbo"}
 _tasks: set[asyncio.Task] = set()
+_syncing_courses: set[int] = set()
 
 # Thread pool for Selenium (the only truly blocking work left)
 _blocking_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="echo360-blocking")
@@ -42,6 +43,14 @@ async def start_workers(max_concurrent_downloads: int = 10, max_concurrent_local
 
 def broadcast(data: dict) -> None:
     """Thread-safe push to all active SSE listeners."""
+    # Track syncing courses
+    cid = data.get("course_id")
+    if cid is not None:
+        if data.get("type") == "sync_start":
+            _syncing_courses.add(cid)
+        elif data.get("type") in ("sync_done", "sync_error"):
+            _syncing_courses.discard(cid)
+
     if _loop is None:
         return
     msg = json.dumps(data)
@@ -49,6 +58,10 @@ def broadcast(data: dict) -> None:
         listeners = list(_listeners)
     for q in listeners:
         _loop.call_soon_threadsafe(q.put_nowait, msg)
+
+
+def is_syncing(course_id: int) -> bool:
+    return course_id in _syncing_courses
 
 
 async def listen() -> AsyncIterator[str]:
@@ -121,6 +134,21 @@ def enqueue_generate_notes(lecture_id: int, model: str) -> None:
                 await note_generator.generate_notes(lecture_id, model)
             except Exception:
                 _LOGGER.exception("Note generation failed for lecture %d", lecture_id)
+
+    if _loop is not None and _notes_sem is not None:
+        _schedule(_run())
+
+
+def enqueue_extract_frames(lecture_id: int) -> None:
+    """Schedule an async frame extraction task, gated by the notes semaphore."""
+    from app import frame_extractor
+
+    async def _run():
+        async with _notes_sem:
+            try:
+                await frame_extractor.extract_frames(lecture_id)
+            except Exception:
+                _LOGGER.exception("Frame extraction failed for lecture %d", lecture_id)
 
     if _loop is not None and _notes_sem is not None:
         _schedule(_run())

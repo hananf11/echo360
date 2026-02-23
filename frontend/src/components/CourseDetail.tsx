@@ -28,12 +28,13 @@ export default function CourseDetail() {
   const [editingName, setEditingName] = useState(false)
   const [editName, setEditName] = useState('')
   const [fixingTitles, setFixingTitles] = useState(false)
+  const [syncing, setSyncing] = useState(false)
   const [showFuture, setShowFuture] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
-      .then(([c, ls]) => { setCourse(c); setLectures(ls) })
+      .then(([c, ls]) => { setCourse(c); setLectures(ls); if (c.syncing) setSyncing(true) })
       .finally(() => setLoading(false))
   }, [courseId])
 
@@ -158,6 +159,16 @@ export default function CourseDetail() {
     if (msg.type === 'titles_error' && msg.course_id === courseId) {
       setFixingTitles(false)
     }
+    if (msg.type === 'sync_start' && msg.course_id === courseId) {
+      setSyncing(true)
+    }
+    if (msg.type === 'sync_done' && msg.course_id === courseId) {
+      setSyncing(false)
+      load()
+    }
+    if (msg.type === 'sync_error' && msg.course_id === courseId) {
+      setSyncing(false)
+    }
   }, [courseId, load])
 
   useSSE(handleSSE)
@@ -168,6 +179,7 @@ export default function CourseDetail() {
   }
 
   const handleSync = async () => {
+    setSyncing(true)
     await syncCourse(courseId)
   }
 
@@ -372,11 +384,12 @@ export default function CourseDetail() {
               <div className="flex items-center gap-1.5">
                 <button
                   onClick={handleSync}
-                  className="flex items-center gap-1.5 text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-slate-700/60 transition-colors text-xs"
+                  disabled={syncing}
+                  className="flex items-center gap-1.5 text-slate-400 hover:text-white px-2 py-1 rounded-md hover:bg-slate-700/60 transition-colors text-xs disabled:opacity-40"
                   title="Re-sync lectures from Echo360"
                 >
-                  <RefreshCw size={13} />
-                  Sync
+                  <RefreshCw size={13} className={syncing ? 'animate-spin' : ''} />
+                  {syncing ? 'Syncing...' : 'Sync'}
                 </button>
                 <button
                   onClick={handleFixTitles}

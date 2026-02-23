@@ -109,6 +109,11 @@ class UpdateDisplayNameRequest(BaseModel):
     display_name: str | None = None
 
 
+class BulkIdsRequest(BaseModel):
+    lecture_ids: list[int]
+    model: str | None = None
+
+
 # ── Courses ───────────────────────────────────────────────────────────────────
 
 @app.get("/api/courses")
@@ -182,7 +187,7 @@ def get_course(course_id: int):
         course = session.get(Course, course_id)
     if not course:
         raise HTTPException(404, "Course not found")
-    return course.to_dict()
+    return {**course.to_dict(), "syncing": jobs.is_syncing(course_id)}
 
 
 @app.post("/api/courses/discover")
@@ -274,7 +279,7 @@ def download_lecture(lecture_id: int):
         row = lec.to_dict()
         course_name = lec.course.name
 
-    if row["audio_status"] not in ("pending", "error"):
+    if row["audio_status"] not in ("pending", "error", "no_media"):
         return {"status": row["audio_status"]}
 
     with get_db() as session:
@@ -319,6 +324,127 @@ def download_all(course_id: int):
     for lec in lecture_data:
         jobs.enqueue_download(lec["id"], course_dir)
     return {"queued": len(lecture_data)}
+
+
+# ── Re-download ───────────────────────────────────────────────────────────────
+
+@app.post("/api/lectures/{lecture_id}/redownload")
+def redownload_lecture(lecture_id: int):
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+        course_name = lec.course.name
+        course_id = lec.course_id
+        # Delete existing audio file
+        if lec.audio_path and os.path.exists(lec.audio_path):
+            os.remove(lec.audio_path)
+        lec.audio_status = "queued"
+        lec.audio_path = None
+        lec.raw_path = None
+        lec.transcript_status = "pending"
+        lec.notes_status = "pending"
+        lec.error_message = None
+
+    jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, "status": "queued"})
+    course_dir = os.path.join(
+        AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
+    )
+    jobs.enqueue_download(lecture_id, course_dir)
+    return {"status": "queued"}
+
+
+@app.post("/api/lectures/bulk-redownload")
+def bulk_redownload(req: BulkIdsRequest):
+    if not req.lecture_ids:
+        return {"queued": 0}
+
+    rows = []
+    with get_db() as session:
+        for lid in req.lecture_ids:
+            lec = session.get(Lecture, lid)
+            if not lec:
+                continue
+            if lec.audio_path and os.path.exists(lec.audio_path):
+                os.remove(lec.audio_path)
+            lec.audio_status = "queued"
+            lec.audio_path = None
+            lec.raw_path = None
+            lec.transcript_status = "pending"
+            lec.notes_status = "pending"
+            lec.error_message = None
+            rows.append((lec.id, lec.course_id, lec.course.name))
+
+    for lid, cid, course_name in rows:
+        jobs.broadcast({"type": "lecture_update", "lecture_id": lid, "course_id": cid, "status": "queued"})
+        course_dir = os.path.join(
+            AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
+        )
+        jobs.enqueue_download(lid, course_dir)
+    return {"queued": len(rows)}
+
+
+@app.post("/api/lectures/bulk-download")
+def bulk_download(req: BulkIdsRequest):
+    if not req.lecture_ids:
+        return {"queued": 0}
+
+    rows = []
+    with get_db() as session:
+        for lid in req.lecture_ids:
+            lec = session.get(Lecture, lid)
+            if not lec or lec.audio_status not in ("pending", "error", "no_media"):
+                continue
+            lec.audio_status = "queued"
+            rows.append((lec.id, lec.course_id, lec.course.name))
+
+    for lid, cid, course_name in rows:
+        jobs.broadcast({"type": "lecture_update", "lecture_id": lid, "course_id": cid, "status": "queued"})
+        course_dir = os.path.join(
+            AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name)
+        )
+        jobs.enqueue_download(lid, course_dir)
+    return {"queued": len(rows)}
+
+
+@app.post("/api/lectures/bulk-transcribe")
+def bulk_transcribe(req: BulkIdsRequest):
+    if not req.lecture_ids:
+        return {"queued": 0}
+
+    model = req.model or "modal"
+    queued = []
+    with get_db() as session:
+        for lid in req.lecture_ids:
+            lec = session.get(Lecture, lid)
+            if not lec or lec.audio_status != "done":
+                continue
+            lec.transcript_status = "queued"
+            queued.append(lid)
+
+    for lid in queued:
+        jobs.enqueue_transcribe(lid, model)
+    return {"queued": len(queued)}
+
+
+@app.post("/api/lectures/bulk-generate-notes")
+def bulk_generate_notes(req: BulkIdsRequest):
+    if not req.lecture_ids:
+        return {"queued": 0}
+
+    model = req.model or "openrouter/meta-llama/llama-3.3-70b-instruct"
+    queued = []
+    with get_db() as session:
+        for lid in req.lecture_ids:
+            lec = session.get(Lecture, lid)
+            if not lec or lec.transcript_status != "done":
+                continue
+            lec.notes_status = "queued"
+            queued.append(lid)
+
+    for lid in queued:
+        jobs.enqueue_generate_notes(lid, model)
+    return {"queued": len(queued)}
 
 
 # ── Transcription ─────────────────────────────────────────────────────────────

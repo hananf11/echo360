@@ -108,9 +108,13 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
             raise
 
     if not raw_path or not isinstance(raw_path, str):
-        msg = "No stream URL found — lecture may not have available media" if not stream_url else "Download failed — no file produced"
-        _set_status(lecture_id, "error", error_message=msg)
-        _bcast({"status": "error", "error": msg})
+        if not stream_url:
+            # Both fast path and Chrome fallback found no media — mark as terminal
+            _set_status(lecture_id, "no_media", error_message="Lecture has no available media")
+            _bcast({"status": "no_media"})
+        else:
+            _set_status(lecture_id, "error", error_message="Download failed — no file produced")
+            _bcast({"status": "error", "error": "Download failed — no file produced"})
         return
 
     # Save raw path and transition to downloaded

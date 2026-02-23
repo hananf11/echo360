@@ -15,6 +15,7 @@ export interface Course {
   notes_count: number
   year: string | null
   total_duration_seconds: number
+  syncing?: boolean
 }
 
 export interface Lecture {

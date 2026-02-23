@@ -44,6 +44,34 @@ async def resolve_audio_m3u8(client: httpx.AsyncClient, m3u8_url: str) -> list[s
     return [seg.absolute_uri for seg in seg_playlist.segments]
 
 
+async def resolve_video_m3u8(client: httpx.AsyncClient, m3u8_url: str) -> list[tuple[str, float]]:
+    """Fetch a master M3U8, find the highest-quality video variant, return (segment_url, duration) tuples."""
+    r = await client.get(m3u8_url, timeout=20)
+    r.raise_for_status()
+    playlist = m3u8.loads(r.text, uri=m3u8_url)
+
+    # Pick highest-quality video variant (last in list = highest bitrate)
+    video_url = None
+    if playlist.playlists:
+        video_url = playlist.playlists[-1].absolute_uri
+    if not video_url:
+        raise RuntimeError("No video variant found in M3U8")
+
+    # Fetch the segment-level playlist
+    r = await client.get(video_url, timeout=20)
+    r.raise_for_status()
+    seg_playlist = m3u8.loads(r.text, uri=video_url)
+
+    # Handle nested playlists (another level of indirection)
+    if not seg_playlist.segments and seg_playlist.playlists:
+        nested_url = seg_playlist.playlists[0].absolute_uri
+        r = await client.get(nested_url, timeout=20)
+        r.raise_for_status()
+        seg_playlist = m3u8.loads(r.text, uri=nested_url)
+
+    return [(seg.absolute_uri, seg.duration) for seg in seg_playlist.segments]
+
+
 async def download_segments(
     client: httpx.AsyncClient,
     segments: list[str],

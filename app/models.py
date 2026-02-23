@@ -49,6 +49,7 @@ class Lecture(Base):
     transcript_model = Column(String)
     notes_status = Column(String, nullable=False, default="pending")
     notes_model = Column(String)
+    frames_status = Column(String, nullable=False, default="pending")
     duration_seconds = Column(Integer)
     raw_path = Column(String)
     error_message = Column(String)

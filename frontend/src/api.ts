@@ -113,6 +113,49 @@ export const generateNotesAll = (courseId: number, model: string): Promise<{ que
     body: JSON.stringify({ model }),
   }).then(r => _json(r))
 
+export const extractFrames = (id: number): Promise<{ status: string }> =>
+  fetch(`${BASE}/lectures/${id}/extract-frames`, { method: 'POST' }).then(r => _json(r))
+
+export interface FrameInfo {
+  url: string
+  time: number
+  reason: string
+}
+
+export const getFrames = (id: number): Promise<FrameInfo[]> =>
+  fetch(`${BASE}/lectures/${id}/frames`).then(r => _json(r))
+
+export const redownloadLecture = (id: number): Promise<{ status: string }> =>
+  fetch(`${BASE}/lectures/${id}/redownload`, { method: 'POST' }).then(r => _json(r))
+
+export const bulkRedownload = (ids: number[]): Promise<{ queued: number }> =>
+  fetch(`${BASE}/lectures/bulk-redownload`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lecture_ids: ids }),
+  }).then(r => _json(r))
+
+export const bulkDownload = (ids: number[]): Promise<{ queued: number }> =>
+  fetch(`${BASE}/lectures/bulk-download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lecture_ids: ids }),
+  }).then(r => _json(r))
+
+export const bulkTranscribe = (ids: number[], model = 'modal'): Promise<{ queued: number }> =>
+  fetch(`${BASE}/lectures/bulk-transcribe`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lecture_ids: ids, model }),
+  }).then(r => _json(r))
+
+export const bulkGenerateNotes = (ids: number[], model: string): Promise<{ queued: number }> =>
+  fetch(`${BASE}/lectures/bulk-generate-notes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lecture_ids: ids, model }),
+  }).then(r => _json(r))
+
 export const fixTitles = (courseId: number): Promise<{ status: string }> =>
   fetch(`${BASE}/courses/${courseId}/fix-titles`, { method: 'POST' }).then(r => _json(r))
 
