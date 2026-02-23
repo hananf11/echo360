@@ -11,8 +11,8 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as LayoutRouteImport } from './routes/_layout'
 import { Route as LayoutIndexRouteImport } from './routes/_layout/index'
-import { Route as CoursesIdRouteImport } from './routes/courses.$id'
 import { Route as LayoutPipelineRouteImport } from './routes/_layout/pipeline'
+import { Route as LayoutCoursesIdRouteImport } from './routes/_layout/courses.$id'
 
 const LayoutRoute = LayoutRouteImport.update({
   id: '/_layout',
@@ -23,50 +23,49 @@ const LayoutIndexRoute = LayoutIndexRouteImport.update({
   path: '/',
   getParentRoute: () => LayoutRoute,
 } as any)
-const CoursesIdRoute = CoursesIdRouteImport.update({
-  id: '/courses/$id',
-  path: '/courses/$id',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const LayoutPipelineRoute = LayoutPipelineRouteImport.update({
   id: '/pipeline',
   path: '/pipeline',
+  getParentRoute: () => LayoutRoute,
+} as any)
+const LayoutCoursesIdRoute = LayoutCoursesIdRouteImport.update({
+  id: '/courses/$id',
+  path: '/courses/$id',
   getParentRoute: () => LayoutRoute,
 } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof LayoutIndexRoute
   '/pipeline': typeof LayoutPipelineRoute
-  '/courses/$id': typeof CoursesIdRoute
+  '/courses/$id': typeof LayoutCoursesIdRoute
 }
 export interface FileRoutesByTo {
   '/pipeline': typeof LayoutPipelineRoute
-  '/courses/$id': typeof CoursesIdRoute
   '/': typeof LayoutIndexRoute
+  '/courses/$id': typeof LayoutCoursesIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_layout': typeof LayoutRouteWithChildren
   '/_layout/pipeline': typeof LayoutPipelineRoute
-  '/courses/$id': typeof CoursesIdRoute
   '/_layout/': typeof LayoutIndexRoute
+  '/_layout/courses/$id': typeof LayoutCoursesIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths: '/' | '/pipeline' | '/courses/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/pipeline' | '/courses/$id' | '/'
+  to: '/pipeline' | '/' | '/courses/$id'
   id:
     | '__root__'
     | '/_layout'
     | '/_layout/pipeline'
-    | '/courses/$id'
     | '/_layout/'
+    | '/_layout/courses/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   LayoutRoute: typeof LayoutRouteWithChildren
-  CoursesIdRoute: typeof CoursesIdRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -85,18 +84,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LayoutIndexRouteImport
       parentRoute: typeof LayoutRoute
     }
-    '/courses/$id': {
-      id: '/courses/$id'
-      path: '/courses/$id'
-      fullPath: '/courses/$id'
-      preLoaderRoute: typeof CoursesIdRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/_layout/pipeline': {
       id: '/_layout/pipeline'
       path: '/pipeline'
       fullPath: '/pipeline'
       preLoaderRoute: typeof LayoutPipelineRouteImport
+      parentRoute: typeof LayoutRoute
+    }
+    '/_layout/courses/$id': {
+      id: '/_layout/courses/$id'
+      path: '/courses/$id'
+      fullPath: '/courses/$id'
+      preLoaderRoute: typeof LayoutCoursesIdRouteImport
       parentRoute: typeof LayoutRoute
     }
   }
@@ -105,11 +104,13 @@ declare module '@tanstack/react-router' {
 interface LayoutRouteChildren {
   LayoutPipelineRoute: typeof LayoutPipelineRoute
   LayoutIndexRoute: typeof LayoutIndexRoute
+  LayoutCoursesIdRoute: typeof LayoutCoursesIdRoute
 }
 
 const LayoutRouteChildren: LayoutRouteChildren = {
   LayoutPipelineRoute: LayoutPipelineRoute,
   LayoutIndexRoute: LayoutIndexRoute,
+  LayoutCoursesIdRoute: LayoutCoursesIdRoute,
 }
 
 const LayoutRouteWithChildren =
@@ -117,7 +118,6 @@ const LayoutRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   LayoutRoute: LayoutRouteWithChildren,
-  CoursesIdRoute: CoursesIdRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

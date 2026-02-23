@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
+import { Link } from '@tanstack/react-router'
 import { Play, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import type { PipelineStatus, Lecture, PipelineConfig, SSEMessage } from '../types'
 import { getPipelineStatus, runLecturePipeline, runCoursePipeline, runGlobalPipeline } from '../api'
@@ -150,16 +151,20 @@ function CourseNode({ course, config }: { course: PipelineStatus; config: Pipeli
         <button onClick={() => setExpanded(!expanded)} className="text-slate-400 hover:text-white">
           {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </button>
-        <span className="text-sm font-semibold text-slate-200 flex-shrink-0 truncate max-w-[240px]">
+        <Link
+          to="/courses/$id"
+          params={{ id: String(course.course_id) }}
+          className="text-sm font-semibold text-slate-200 flex-shrink-0 truncate max-w-[240px] hover:text-indigo-300 transition-colors"
+        >
           {course.display_name || course.course_name}
-        </span>
+        </Link>
         <div className="flex-1 grid grid-cols-4 gap-3">
           <ProgressBar done={course.audio_done} total={eligible} color="bg-indigo-500" />
           <ProgressBar done={course.transcript_done} total={eligible} color="bg-cyan-500" />
           <ProgressBar done={course.notes_done} total={eligible} color="bg-amber-500" />
           <ProgressBar done={course.frames_done} total={eligible} color="bg-purple-500" />
         </div>
-        <span className="text-xs text-slate-500 w-16 text-right">{course.total} lec</span>
+        <span className="text-xs text-slate-500 w-16 text-right">{eligible} lec</span>
         <button
           onClick={handleRun}
           className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded hover:bg-slate-700 flex items-center gap-1"
@@ -235,7 +240,7 @@ function PipelineToolbar({
         <select
           value={config.transcript_model || 'groq'}
           onChange={e => setConfig({ ...config, transcript_model: e.target.value })}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
+          className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-violet-500"
         >
           <optgroup label="Remote">
             <option value="cloud">Cloud auto (Groq → Modal)</option>
@@ -256,7 +261,7 @@ function PipelineToolbar({
         <select
           value={config.notes_model || 'openrouter/meta-llama/llama-3.3-70b-instruct'}
           onChange={e => setConfig({ ...config, notes_model: e.target.value })}
-          className="bg-slate-800 border border-slate-600 rounded px-2 py-1 text-xs text-slate-200"
+          className="bg-slate-900/60 border border-slate-600 text-slate-300 text-xs rounded-lg px-2 py-1.5 focus:outline-none focus:border-amber-500"
         >
           <option value="auto">Auto (free first)</option>
           <optgroup label="Free">
@@ -283,7 +288,7 @@ function PipelineToolbar({
           type="checkbox"
           checked={config.run_frames ?? true}
           onChange={e => setConfig({ ...config, run_frames: e.target.checked })}
-          className="rounded bg-slate-700 border-slate-600"
+          className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
         />
         Frames
       </label>

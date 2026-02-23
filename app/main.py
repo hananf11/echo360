@@ -126,19 +126,24 @@ class PipelineRequest(BaseModel):
 
 @app.get("/api/courses")
 def list_courses():
+    from datetime import date, timedelta
+    tomorrow = (date.today() + timedelta(days=1)).isoformat()
+
     with get_db() as session:
+        # Only count non-future lectures (date <= tomorrow) for consistency with pipeline
+        is_current = case((Lecture.date <= tomorrow, 1), else_=0)
         rows = (
             session.query(
                 Course,
-                func.count(Lecture.id).label("lecture_count"),
+                func.sum(is_current).label("lecture_count"),
                 func.min(func.substr(Lecture.date, 1, 4)).label("year"),
                 func.sum(case((Lecture.audio_status.in_(("downloading", "downloaded", "converting")), 1), else_=0)).label("downloading_count"),
                 func.sum(case((Lecture.audio_status == "queued", 1), else_=0)).label("queued_count"),
-                func.sum(case((Lecture.audio_status == "done", 1), else_=0)).label("downloaded_count"),
-                func.sum(case((Lecture.audio_status == "no_media", 1), else_=0)).label("no_media_count"),
-                func.sum(case((Lecture.transcript_status == "done", 1), else_=0)).label("transcribed_count"),
-                func.sum(case((Lecture.notes_status == "done", 1), else_=0)).label("notes_count"),
-                func.sum(func.coalesce(Lecture.duration_seconds, 0)).label("total_duration_seconds"),
+                func.sum(case(((Lecture.audio_status == "done") & (Lecture.date <= tomorrow), 1), else_=0)).label("downloaded_count"),
+                func.sum(case(((Lecture.audio_status == "no_media") & (Lecture.date <= tomorrow), 1), else_=0)).label("no_media_count"),
+                func.sum(case(((Lecture.transcript_status == "done") & (Lecture.date <= tomorrow), 1), else_=0)).label("transcribed_count"),
+                func.sum(case(((Lecture.notes_status == "done") & (Lecture.date <= tomorrow), 1), else_=0)).label("notes_count"),
+                func.sum(case((Lecture.date <= tomorrow, func.coalesce(Lecture.duration_seconds, 0)), else_=0)).label("total_duration_seconds"),
             )
             .outerjoin(Lecture, Lecture.course_id == Course.id)
             .group_by(Course.id)
@@ -148,15 +153,15 @@ def list_courses():
     return [
         {
             **course.to_dict(),
-            "lecture_count": lecture_count,
+            "lecture_count": lecture_count or 0,
             "year": year,
-            "downloading_count": downloading_count,
-            "queued_count": queued_count,
-            "downloaded_count": downloaded_count,
-            "no_media_count": no_media_count,
-            "transcribed_count": transcribed_count,
-            "notes_count": notes_count,
-            "total_duration_seconds": total_duration_seconds,
+            "downloading_count": downloading_count or 0,
+            "queued_count": queued_count or 0,
+            "downloaded_count": downloaded_count or 0,
+            "no_media_count": no_media_count or 0,
+            "transcribed_count": transcribed_count or 0,
+            "notes_count": notes_count or 0,
+            "total_duration_seconds": total_duration_seconds or 0,
         }
         for course, lecture_count, year, downloading_count, queued_count,
             downloaded_count, no_media_count, transcribed_count, notes_count,
