@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { Link } from '@tanstack/react-router'
 import { ArrowLeft, Download, RefreshCw, Mic, Sparkles, Wand2, Check, X, CalendarClock, ExternalLink } from 'lucide-react'
 import { getCourse, getLectures, fixTitles, updateCourseDisplayName, syncCourse, bulkDownload, bulkRedownload, bulkTranscribe, bulkGenerateNotes } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
@@ -15,9 +15,7 @@ function splitCourseCode(name: string): [string, string | null] {
   return [name, null]
 }
 
-export default function CourseDetail() {
-  const { id } = useParams<{ id: string }>()
-  const courseId = Number(id)
+export default function CourseDetail({ courseId }: { courseId: number }) {
 
   const [course, setCourse] = useState<Course | null>(null)
   const [lectures, setLectures] = useState<Lecture[]>([])

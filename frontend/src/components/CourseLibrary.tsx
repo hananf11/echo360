@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link } from '@tanstack/react-router'
 import { PlusCircle, RefreshCw, BookOpen, Trash2, Download, HardDrive, Mic, Wand2, Check, Search, ChevronRight } from 'lucide-react'
 import { getCourses, syncCourse, deleteCourse, downloadAll, downloadAllGlobal, transcribeAll, transcribeAllGlobal, getStorage, fixTitles, type StorageStats } from '../api'
 import type { Course, SSEMessage } from '../types'
@@ -307,7 +307,8 @@ export default function CourseLibrary() {
                     return (
                     <Link
                       key={course.id}
-                      to={`/courses/${course.id}`}
+                      to="/courses/$id"
+                      params={{ id: String(course.id) }}
                       className="group bg-slate-800/70 rounded-xl p-5 flex flex-col border border-slate-700/50 hover:border-slate-500 hover:bg-slate-800 transition-all"
                     >
                       <div className="flex-1 min-w-0">

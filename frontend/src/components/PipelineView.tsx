@@ -1,6 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Link } from 'react-router-dom'
-import { ArrowLeft, Play, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
+import { Play, ChevronDown, ChevronRight, RotateCcw } from 'lucide-react'
 import type { PipelineStatus, Lecture, PipelineConfig, SSEMessage } from '../types'
 import { getPipelineStatus, runLecturePipeline, runCoursePipeline, runGlobalPipeline } from '../api'
 import { useSSE } from '../hooks/useSSE'
@@ -225,7 +224,7 @@ function PipelineToolbar({
   onRunAll: () => void
 }) {
   return (
-    <div className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-700/50 px-6 py-3 flex items-center gap-4 flex-wrap">
+    <div className="sticky top-12 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-700/50 px-6 py-3 flex items-center gap-4 flex-wrap">
       <label className="text-xs text-slate-400 flex items-center gap-1.5">
         Transcript:
         <select
@@ -399,24 +398,17 @@ export default function PipelineView() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+      <div className="flex items-center justify-center py-24">
         <div className="text-slate-400">Loading pipeline status...</div>
       </div>
     )
   }
 
   return (
-    <div className="min-h-screen bg-slate-900 text-slate-100">
+    <>
       <PipelineToolbar config={config} setConfig={setConfig} onRunAll={handleRunAll} />
 
       <div className="max-w-7xl mx-auto px-6 py-6">
-        <div className="flex items-center gap-3 mb-6">
-          <Link to="/" className="text-slate-400 hover:text-white">
-            <ArrowLeft size={18} />
-          </Link>
-          <h1 className="text-xl font-semibold">Pipeline</h1>
-        </div>
-
         <PlatformSummary data={data} />
 
         {data.length === 0 ? (
@@ -434,6 +426,6 @@ export default function PipelineView() {
           </div>
         )}
       </div>
-    </div>
+    </>
   )
 }

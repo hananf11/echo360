@@ -1,22 +1,29 @@
-import { useState, useEffect, useCallback } from 'react'
-import { BrowserRouter, Routes, Route, Link } from 'react-router-dom'
-import { ListOrdered, GitBranch } from 'lucide-react'
-import CourseLibrary from './components/CourseLibrary'
-import CourseDetail from './components/CourseDetail'
-import QueuePanel from './components/QueuePanel'
-import PipelineView from './components/PipelineView'
-import type { SSEMessage } from './types'
-import { useSSE } from './hooks/useSSE'
+import { useState, useEffect, useCallback, createContext, useContext } from 'react'
+import { createRootRoute, Outlet } from '@tanstack/react-router'
+import QueuePanel from '../components/QueuePanel'
+import type { SSEMessage } from '../types'
+import { useSSE } from '../hooks/useSSE'
 
 const TERMINAL_STATUSES = new Set(['done', 'error', 'pending', 'queued', 'downloaded'])
 
-function AppContent() {
+export interface RootContext {
+  activeCount: number
+  onOpenQueue: () => void
+}
+
+const RootCtx = createContext<RootContext>({ activeCount: 0, onOpenQueue: () => {} })
+export const useRootContext = () => useContext(RootCtx)
+
+export const Route = createRootRoute({
+  component: RootComponent,
+})
+
+function RootComponent() {
   const [queueOpen, setQueueOpen] = useState(false)
   const [activeCount, setActiveCount] = useState(0)
   const [progressMap, setProgressMap] = useState<Record<number, SSEMessage['progress']>>({})
 
   const handleSSE = useCallback((msg: SSEMessage) => {
-
     if (msg.type === 'lecture_update' && msg.lecture_id !== undefined) {
       if (msg.progress) {
         setProgressMap(prev => ({ ...prev, [msg.lecture_id!]: msg.progress! }))
@@ -52,51 +59,14 @@ function AppContent() {
 
   useSSE(handleSSE)
 
-  // Initial load of active count
   useEffect(() => {
     fetch('/api/queue').then(r => r.json()).then((items: unknown[]) => setActiveCount(items.length)).catch(() => {})
   }, [])
 
   return (
-    <>
-      <div className="min-h-screen bg-slate-900 text-slate-100">
-        {/* Fixed bottom-right buttons */}
-        <Link
-          to="/pipeline"
-          className="fixed bottom-5 right-28 z-40 flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white px-4 py-2.5 rounded-full shadow-lg transition-colors text-sm font-medium"
-        >
-          <GitBranch size={16} />
-          Pipeline
-        </Link>
-        <button
-          onClick={() => setQueueOpen(true)}
-          className="fixed bottom-5 right-5 z-40 flex items-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-600 text-slate-300 hover:text-white px-4 py-2.5 rounded-full shadow-lg transition-colors text-sm font-medium"
-        >
-          <ListOrdered size={16} />
-          Queue
-          {activeCount > 0 && (
-            <span className="bg-indigo-600 text-white text-xs font-bold px-1.5 py-0.5 rounded-full min-w-[20px] text-center">
-              {activeCount}
-            </span>
-          )}
-        </button>
-
-        <Routes>
-          <Route path="/" element={<CourseLibrary />} />
-          <Route path="/courses/:id" element={<CourseDetail />} />
-          <Route path="/pipeline" element={<PipelineView />} />
-        </Routes>
-      </div>
-
+    <RootCtx.Provider value={{ activeCount, onOpenQueue: () => setQueueOpen(true) }}>
+      <Outlet />
       <QueuePanel open={queueOpen} onClose={() => setQueueOpen(false)} progressMap={progressMap} />
-    </>
-  )
-}
-
-export default function App() {
-  return (
-    <BrowserRouter>
-      <AppContent />
-    </BrowserRouter>
+    </RootCtx.Provider>
   )
 }
