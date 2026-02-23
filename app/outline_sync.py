@@ -7,6 +7,8 @@ from app.outline import (
     OUTLINE_COLLECTION,
     find_or_create_collection,
     find_or_create_document,
+    list_documents,
+    create_document,
     update_document,
 )
 from app.database import get_db
@@ -119,9 +121,9 @@ def _sync(lecture_id: int) -> None:
         if not course:
             return
 
-        year = lec.date[:4] if lec.date else "Unknown"
+        lecture_date = lec.date or "1970-01-01"
+        year = lecture_date[:4]
         course_title = course.display_name or course.name
-        lecture_title = f"{lec.date} - {lec.title}"
 
         has_notes = lec.notes_status == "done"
         has_transcript = lec.transcript_status == "done"
@@ -129,6 +131,7 @@ def _sync(lecture_id: int) -> None:
         notes_md = ""
         notes_model = None
         notes_date = None
+        generated_title = None
         if has_notes:
             note = (
                 session.query(Note)
@@ -140,6 +143,14 @@ def _sync(lecture_id: int) -> None:
                 notes_md = note.content_md
                 notes_model = note.model
                 notes_date = note.created_at
+                generated_title = note.generated_title
+
+        # Build lecture title: "2026-02-18 - Lecture 3 - Generated Title"
+        base_title = lec.title  # e.g. "Lecture 3"
+        if generated_title:
+            lecture_title = f"{lecture_date} - {base_title} - {generated_title}"
+        else:
+            lecture_title = f"{lecture_date} - {base_title}"
 
         transcript_segments: list[dict] = []
         transcript_model = None
@@ -179,15 +190,23 @@ def _sync(lecture_id: int) -> None:
     if info_footer:
         lecture_body = lecture_body.rstrip() + "\n\n" + info_footer if lecture_body else info_footer
 
-    lecture_doc = find_or_create_document(
-        lecture_title, collection_id,
-        parent_document_id=course_doc["id"],
-        text=lecture_body,
-    )
+    # Find lecture doc by date prefix (title may change when generated title is added)
+    date_prefix = f"{lecture_date} - "
+    lecture_doc = None
+    existing_docs = list_documents(collection_id, parent_document_id=course_doc["id"])
+    for doc in existing_docs:
+        if doc.get("title", "").startswith(date_prefix):
+            lecture_doc = doc
+            break
 
-    # Always update lecture doc body (notes + metadata)
-    if lecture_body:
-        update_document(lecture_doc["id"], text=lecture_body)
+    if lecture_doc is None:
+        lecture_doc = create_document(
+            lecture_title, lecture_body, collection_id,
+            parent_document_id=course_doc["id"],
+        )
+    else:
+        # Update title (may have changed) and body
+        update_document(lecture_doc["id"], title=lecture_title, text=lecture_body)
 
     # Upsert transcript child doc (merged segments + metadata)
     if has_transcript and transcript_segments:

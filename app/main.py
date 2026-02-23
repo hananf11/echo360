@@ -275,7 +275,17 @@ def list_lectures(course_id: int):
             .order_by(Lecture.date.desc())
             .all()
         )
-    return [lec.to_dict() for lec in lectures]
+        result = []
+        for lec in lectures:
+            d = lec.to_dict()
+            # Include the generated title from the latest note if available
+            if lec.notes_status == "done" and lec.notes:
+                latest_note = max(lec.notes, key=lambda n: n.id)
+                d["notes_generated_title"] = latest_note.generated_title
+            else:
+                d["notes_generated_title"] = None
+            result.append(d)
+    return result
 
 
 @app.post("/api/lectures/{lecture_id}/download")

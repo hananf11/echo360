@@ -78,6 +78,7 @@ class Note(Base):
     lecture_id = Column(Integer, ForeignKey("lectures.id", ondelete="CASCADE"), nullable=False)
     model = Column(String, nullable=False)
     content_md = Column(Text, nullable=False)
+    generated_title = Column(String)
     frame_timestamps = Column(Text)
     created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 

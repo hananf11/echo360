@@ -111,7 +111,12 @@ function LectureNode({ lecture, config }: { lecture: Lecture; config: PipelineCo
   return (
     <div className="flex items-center gap-3 py-1.5 px-3 hover:bg-slate-800/50 rounded group">
       <span className="text-xs text-slate-500 w-20 shrink-0 tabular-nums">{lecture.date}</span>
-      <span className="text-sm text-slate-300 truncate flex-1 min-w-0">{lecture.title}</span>
+      <span className="text-sm text-slate-300 truncate flex-1 min-w-0">
+        {lecture.title}
+        {lecture.notes_generated_title && (
+          <span className="text-xs text-slate-500 ml-2">{lecture.notes_generated_title}</span>
+        )}
+      </span>
       <div className="flex items-center gap-1">
         {STAGES.map(s => (
           <StagePill key={s} stage={s} lecture={lecture} />

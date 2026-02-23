@@ -191,6 +191,9 @@ export default function LectureRow({ lecture, hostname, isLast, selected, onTogg
         {/* Title + progress */}
         <td className="px-4 py-3 text-sm text-slate-200">
           <div>{lecture.title}</div>
+          {lecture.notes_generated_title && (
+            <div className="text-xs text-slate-400 mt-0.5">{lecture.notes_generated_title}</div>
+          )}
           {showProgress && <ProgressBar progress={progress} />}
         </td>
 

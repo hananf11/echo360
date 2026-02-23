@@ -30,6 +30,7 @@ export interface Lecture {
   transcript_model: string | null
   notes_status: 'pending' | 'queued' | 'generating' | 'done' | 'error'
   notes_model: string | null
+  notes_generated_title: string | null
   frames_status: 'pending' | 'queued' | 'extracting' | 'done' | 'error'
   duration_seconds: number | null
   error_message: string | null

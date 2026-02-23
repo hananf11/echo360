@@ -7,7 +7,7 @@ import litellm
 
 from app.database import get_db
 from app.llm import router
-from app.models import Lecture, Note, Transcript
+from app.models import Course, Lecture, Note, Transcript
 from app import jobs
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,6 +19,7 @@ You MUST respond with a single JSON object matching this exact schema:
 
 {
   "notes": "<structured markdown notes>",
+  "title": "<short descriptive title for this lecture>",
   "frame_timestamps": [
     {"time": <seconds as number>, "reason": "<what visual is likely shown>"},
     ...
@@ -26,9 +27,42 @@ You MUST respond with a single JSON object matching this exact schema:
 }
 
 Rules for "notes":
-- Produce thorough, structured markdown covering: key topics, concepts, definitions, examples, formulas, and any assignments/action items mentioned.
-- Use markdown headings (###), bullet points, **bold** for key terms, and `code` for technical terms where appropriate.
-- Be detailed but concise. Organize by topic, not chronologically.
+- Produce thorough, structured markdown lecture notes.
+- You MUST follow this exact structure:
+
+## <Topic Heading>
+
+### <Subtopic>
+
+* bullet points for content
+* **bold** for key terms and definitions
+* > blockquotes for notable quotes from the lecturer
+
+## <Next Topic Heading>
+...
+
+## Key Terms
+
+| Term | Definition |
+|------|------------|
+| **Term** | Definition |
+
+## Action Items
+
+* List any assignments, readings, deadlines, or tasks mentioned
+
+- Content rules:
+  - Cover all key topics, concepts, definitions, examples, formulas mentioned.
+  - Use ## for major topic sections, ### for subtopics. Never use # (that's reserved for the document title).
+  - Use tables for comparisons and structured information.
+  - Be detailed but concise. Organise by topic, not chronologically.
+  - The correct course code will be provided in the prompt. Use it when referencing the course — the transcript audio often garbles course codes (e.g. "sci 101" should be "SCIE101").
+  - Always end with "Key Terms" and "Action Items" sections (use "None mentioned" if truly empty).
+
+Rules for "title":
+- A short (3-8 word) descriptive title summarising the lecture's main topic.
+- Do NOT include the course name, course code, lecture number, or date.
+- Examples: "Introduction to MapReduce", "Scientific Reasoning and Citation", "Mātauranga Māori and Worldview"
 
 Rules for "frame_timestamps":
 - Identify moments where visual content is likely being shown or changed. Include timestamps for:
@@ -56,6 +90,10 @@ RESPONSE_SCHEMA = {
                     "type": "string",
                     "description": "Structured markdown lecture notes",
                 },
+                "title": {
+                    "type": "string",
+                    "description": "Short descriptive title for the lecture (3-8 words)",
+                },
                 "frame_timestamps": {
                     "type": "array",
                     "description": "Timestamps where visual content is likely shown",
@@ -76,7 +114,7 @@ RESPONSE_SCHEMA = {
                     },
                 },
             },
-            "required": ["notes", "frame_timestamps"],
+            "required": ["title", "notes", "frame_timestamps"],
             "additionalProperties": False,
         },
     },
@@ -96,8 +134,8 @@ def _format_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _parse_response(raw: str) -> tuple[str, list[dict]]:
-    """Parse JSON response into markdown notes and frame timestamps."""
+def _parse_response(raw: str) -> tuple[str, str, list[dict]]:
+    """Parse JSON response into title, markdown notes, and frame timestamps."""
     # Strip markdown code fences if the model wrapped the JSON
     text = raw.strip()
     if text.startswith("```"):
@@ -107,13 +145,9 @@ def _parse_response(raw: str) -> tuple[str, list[dict]]:
             text = text[:-3]
         text = text.strip()
 
-    # Some models output truncated or malformed JSON — try to repair
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError:
-        # Try to extract a valid JSON object from the response
-        data = _repair_json(text)
+    data = json.loads(text)
 
+    title = data.get("title", "").strip()
     notes_md = data.get("notes", "").strip()
     frame_timestamps = data.get("frame_timestamps", [])
 
@@ -131,7 +165,7 @@ def _parse_response(raw: str) -> tuple[str, list[dict]]:
     # Sort by time
     validated.sort(key=lambda x: x["time"])
 
-    return notes_md, validated
+    return title, notes_md, validated
 
 
 def _is_schema_error(err: Exception) -> bool:
@@ -162,6 +196,8 @@ async def generate_notes(lecture_id: int, model: str) -> None:
         if lec.transcript_status != "done":
             return
         course_id = lec.course_id
+        course = session.get(Course, course_id)
+        course_name = (course.display_name or course.name) if course else "Unknown"
 
         # Get latest transcript
         transcript = (
@@ -185,7 +221,7 @@ async def generate_notes(lecture_id: int, model: str) -> None:
 
         # Format transcript
         formatted = _format_transcript(segments)
-        user_msg = f"# Lecture: {lecture_title}\n\n{formatted}"
+        user_msg = f"# Course: {course_name}\n# Lecture: {lecture_title}\n\n{formatted}"
 
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
@@ -216,11 +252,11 @@ async def generate_notes(lecture_id: int, model: str) -> None:
         if not content or not content.strip():
             raise RuntimeError("Empty response from LLM")
 
-        notes_md, frame_timestamps = _parse_response(content)
+        generated_title, notes_md, frame_timestamps = _parse_response(content)
         if not notes_md:
             raise RuntimeError("Parsed notes are empty")
 
-        _LOGGER.info("Success with model: %s (%d frame timestamps)", llm_model, len(frame_timestamps))
+        _LOGGER.info("Success with model: %s (title=%r, %d frame timestamps)", llm_model, generated_title, len(frame_timestamps))
 
         # Store in DB
         with get_db() as session:
@@ -228,6 +264,7 @@ async def generate_notes(lecture_id: int, model: str) -> None:
                 lecture_id=lecture_id,
                 model=llm_model,
                 content_md=notes_md,
+                generated_title=generated_title or None,
                 frame_timestamps=json.dumps(frame_timestamps) if frame_timestamps else None,
             ))
             lec = session.get(Lecture, lecture_id)
