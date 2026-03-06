@@ -13,6 +13,9 @@ services:
     environment:
       ECHO360_DB: /data/echo360.db
       ECHO360_AUDIO_DIR: /data/audio
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
     restart: unless-stopped
 
 volumes:
