@@ -55,12 +55,17 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
         row["course_name"] = lec.course.name
 
     course_id = row["course_id"]
+    _LOGGER.info(
+        "run_download[%d]: %r (%s) → %s",
+        lecture_id, row["title"], row["date"], output_dir,
+    )
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
 
     # Skip if already done
     if row["audio_status"] == "done" and row["audio_path"] and os.path.exists(row["audio_path"]):
+        _LOGGER.info("run_download[%d]: already done, skipping (%s)", lecture_id, row["audio_path"])
         _bcast({"status": "done", "audio_path": row["audio_path"]})
         return
 
@@ -72,6 +77,11 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
 
     video_json = json.loads(row["raw_json"])
     stream_url = _extract_stream_url(video_json, row["hostname"])
+    _LOGGER.info(
+        "run_download[%d]: stream_url=%s",
+        lecture_id,
+        (stream_url[0][:80] + "…") if isinstance(stream_url, list) else (str(stream_url or "None")[:80]),
+    )
 
     # Early exit if lecture has no media at all
     if not stream_url:
@@ -80,6 +90,10 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
         has_media = bool(lesson.get("medias"))
         has_video = lesson.get("hasVideo", False)
         if not has_content and not has_media and not has_video:
+            _LOGGER.info(
+                "run_download[%d]: no media (hasContent=%s hasMedia=%s hasVideo=%s)",
+                lecture_id, has_content, has_media, has_video,
+            )
             _set_status(lecture_id, "no_media", error_message="Lecture has no available media")
             _bcast({"status": "no_media"})
             return
@@ -87,8 +101,11 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
     raw_path = None
 
     if stream_url:
+        _LOGGER.info("run_download[%d]: trying fast download path", lecture_id)
         try:
             raw_path = await _download_fast(stream_url, output_dir, filename, lecture_id, _bcast)
+            if raw_path:
+                _LOGGER.info("run_download[%d]: fast download succeeded → %s", lecture_id, raw_path)
         except Exception:
             _LOGGER.warning("Fast download failed for lecture %d, falling back to Chrome", lecture_id, exc_info=True)
             raw_path = None
@@ -101,6 +118,8 @@ async def run_download(lecture_id: int, output_dir: str) -> None:
                 jobs._blocking_executor,
                 _download_chrome_fallback, row, output_dir, filename,
             )
+            if raw_path:
+                _LOGGER.info("run_download[%d]: Chrome fallback succeeded → %s", lecture_id, raw_path)
         except Exception as e:
             _LOGGER.exception("Chrome fallback failed for lecture %d", lecture_id)
             _set_status(lecture_id, "error", error_message=str(e))
@@ -135,10 +154,16 @@ async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id:
         with open(_COOKIES_FILE) as f:
             for c in json.load(f):
                 cookies[c["name"]] = c["value"]
+    _LOGGER.debug("_download_fast[%d]: %d session cookies loaded", lecture_id, len(cookies))
 
     async with httpx.AsyncClient(cookies=cookies, follow_redirects=True) as client:
         urls = stream_url if isinstance(stream_url, list) else [stream_url]
         single_url = urls[0]
+        is_m3u8 = single_url.endswith(".m3u8")
+        _LOGGER.info(
+            "_download_fast[%d]: url=%s… type=%s",
+            lecture_id, single_url[:80], "m3u8" if is_m3u8 else "direct",
+        )
 
         dl_start = time.monotonic()
 
@@ -155,12 +180,15 @@ async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id:
                 progress["eta_seconds"] = round(eta, 1)
             _throttled_progress(lecture_id, {"status": "downloading", "progress": progress}, _bcast)
 
-        if single_url.endswith(".m3u8"):
+        if is_m3u8:
             segments = await async_downloader.resolve_audio_m3u8(client, single_url)
+            _LOGGER.info("_download_fast[%d]: resolved %d M3U8 segments", lecture_id, len(segments))
             raw_path = await async_downloader.download_segments(client, segments, output_dir, on_progress)
         else:
             raw_path = await async_downloader.download_direct(client, single_url, output_dir, filename, on_progress)
 
+    elapsed = time.monotonic() - dl_start
+    _LOGGER.info("_download_fast[%d]: finished in %.1fs → %s", lecture_id, elapsed, raw_path)
     return raw_path
 
 
@@ -169,6 +197,8 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
     from echo360.videos import EchoCloudVideo
     from echo360.hls_downloader import Downloader
 
+    lecture_id = row.get("id", "?")
+    _LOGGER.info("_download_chrome_fallback[%s]: starting for %r", lecture_id, row.get("title"))
     video_json = json.loads(row["raw_json"])
     driver = None
     try:
@@ -177,10 +207,50 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
             raise RuntimeError("No valid session. Please re-authenticate via the CLI.")
 
         video = EchoCloudVideo(video_json, driver, row["hostname"], alternative_feeds=False)
-        # EchoCloudVideo sets _url to False when no streams are found
+        _LOGGER.info("_download_chrome_fallback[%s]: video.url=%r", lecture_id, video.url)
+
+        # EchoCloudVideo sets _url to False when no streams are found via JSON or quick scrape.
+        # This can happen when hasAvailableVideo is None/False in the JSON but the media is
+        # actually available — the SPA loads the stream URL via XHR after initial render.
+        # Poll the classroom page for up to 30s waiting for M3U8 URLs to appear.
         if not video.url:
-            _LOGGER.warning("Chrome fallback: no stream URL found for lecture (video.url=%r)", video.url)
-            return None
+            _LOGGER.info(
+                "_download_chrome_fallback[%s]: no URL from JSON, polling classroom page for M3U8...",
+                lecture_id,
+            )
+            lesson_id = video_json["lesson"]["lesson"]["id"]
+            classroom_url = f"{row['hostname']}/lesson/{lesson_id}/classroom"
+            driver.get(classroom_url)
+
+            found_url = None
+            for attempt in range(15):
+                time.sleep(2)
+                page = driver.page_source.replace("\\/", "/")
+                urls = set(re.findall(r'https://[^,"\'<\s]+\.m3u8', page))
+                if urls:
+                    av = sorted(u for u in urls if u.endswith("av.m3u8"))
+                    ao = sorted(u for u in urls if u.endswith("a.m3u8"))
+                    chosen = av or ao or sorted(urls)
+                    if chosen:
+                        found_url = chosen[-1]
+                        break
+                _LOGGER.debug(
+                    "_download_chrome_fallback[%s]: attempt %d, no m3u8 yet (page=%d chars)",
+                    lecture_id, attempt + 1, len(page),
+                )
+
+            if not found_url:
+                _LOGGER.warning(
+                    "_download_chrome_fallback[%s]: classroom page never yielded an M3U8 URL",
+                    lecture_id,
+                )
+                return None
+
+            _LOGGER.info(
+                "_download_chrome_fallback[%s]: found M3U8 via polling: %s",
+                lecture_id, found_url[:80],
+            )
+            video._url = [found_url]
         # Use the existing download which produces a raw .ts file (we skip conversion here)
         result = video.download(output_dir, filename, audio_only=True)
         if result:
@@ -220,8 +290,11 @@ async def _probe_audio_codec(input_file: str) -> str | None:
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
-        return stdout.decode().strip() or None
-    except Exception:
+        codec = stdout.decode().strip() or None
+        _LOGGER.debug("_probe_audio_codec: %s → %s", os.path.basename(input_file), codec)
+        return codec
+    except Exception as exc:
+        _LOGGER.debug("_probe_audio_codec: failed for %s — %s", os.path.basename(input_file), exc)
         return None
 
 
@@ -291,6 +364,11 @@ async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename:
         course_id = lec.course_id if lec else None
         duration_seconds = lec.duration_seconds if lec else None
 
+    _LOGGER.info(
+        "run_convert[%d]: %s → opus (duration=%ss)",
+        lecture_id, os.path.basename(raw_path), duration_seconds,
+    )
+
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
 
@@ -312,11 +390,19 @@ async def run_convert(lecture_id: int, raw_path: str, output_dir: str, filename:
 
         # If Chrome fallback already produced an opus file, just use it
         if raw_path.endswith(".opus"):
+            _LOGGER.info("run_convert[%d]: raw file is already opus, skipping conversion", lecture_id)
             _set_status(lecture_id, "done", audio_path=raw_path, raw_path=None)
             _bcast({"status": "done", "audio_path": raw_path})
             return
 
+        convert_start = time.monotonic()
         if await _convert_to_opus(raw_path, opus_path, duration_seconds, _on_convert_progress):
+            elapsed = time.monotonic() - convert_start
+            size_mb = os.path.getsize(opus_path) / 1024 / 1024
+            _LOGGER.info(
+                "run_convert[%d]: done in %.1fs → %s (%.1f MB)",
+                lecture_id, elapsed, os.path.basename(opus_path), size_mb,
+            )
             try:
                 os.remove(raw_path)
             except OSError:
