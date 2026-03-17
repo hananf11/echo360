@@ -624,18 +624,26 @@ class EchoCloudVideo(EchoVideo):
             print("Tried all methods to retrieve videos but all had failed!")
             raise
 
-        # find one that has audio + video
-        m3u8urls = [url for url in m3u8urls if url.endswith("av.m3u8")]
-        if len(m3u8urls) == 0:
-            print(
-                "No audio+video m3u8 files found! Skipping...\n"
-                "This can either be (i) Credential failure? (ii) Logic error "
-                "in the script. (iii) This lecture only provides audio?\n"
-                "This script is hard-coded to download audio+video. "
-                "If this is your intended behaviour, "
-                "please contact the author."
+        # prefer audio+video streams; fall back to audio-only streams
+        av_urls = [url for url in m3u8urls if url.endswith("av.m3u8")]
+        if av_urls:
+            m3u8urls = av_urls
+        else:
+            a_urls = [url for url in m3u8urls if url.endswith("a.m3u8")]
+            if not a_urls:
+                print(
+                    "No audio+video m3u8 files found! Skipping...\n"
+                    "This can either be (i) Credential failure? (ii) Logic error "
+                    "in the script. (iii) This lecture only provides audio?\n"
+                    "This script is hard-coded to download audio+video. "
+                    "If this is your intended behaviour, "
+                    "please contact the author."
+                )
+                return False
+            _LOGGER.info(
+                "No av.m3u8 streams found; falling back to audio-only streams: %s", a_urls
             )
-            return False
+            m3u8urls = a_urls
         # There could exists multiple m3u8 files
         # (e.g. .../s1_av.m3u8, .../s2_av.m3u8, etc.) Probably to refer to
         # different quality?? We will set it to always prefer higher number.
