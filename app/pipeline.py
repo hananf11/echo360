@@ -192,6 +192,108 @@ async def _download_fast(stream_url, output_dir: str, filename: str, lecture_id:
     return raw_path
 
 
+def _download_signed_hls(session, master_url: str, output_dir: str, filename: str, lecture_id) -> str | None:
+    """Download a signed HLS stream, preserving auth query-string on all sub-resource URLs.
+
+    Echo360 live streams use a signed master URL (token in query string) but list
+    sub-playlists as relative paths.  Standard urljoin() strips the query string, so
+    sub-playlists and segments end up unsigned and get 403.  This function fixes that.
+    """
+    import concurrent.futures
+    import tempfile
+    import m3u8 as m3u8_lib
+    from urllib.parse import urlparse, urlunparse, urljoin
+
+    def _resolve(parent_url: str, uri: str) -> str:
+        """Resolve uri relative to parent_url, preserving parent's query string."""
+        if uri.startswith("http"):
+            return uri  # already absolute — use as-is
+        absolute = urljoin(parent_url, uri)
+        parsed_parent = urlparse(parent_url)
+        parsed_abs = urlparse(absolute)
+        if parsed_parent.query and not parsed_abs.query:
+            absolute = urlunparse(parsed_abs._replace(query=parsed_parent.query))
+        return absolute
+
+    # Fetch master playlist
+    r = session.get(master_url, timeout=20)
+    if not r.ok:
+        _LOGGER.warning("_download_signed_hls[%s]: master M3U8 returned %d", lecture_id, r.status_code)
+        return None
+
+    playlist = m3u8_lib.loads(r.text, uri=master_url)
+
+    # Pick sub-playlist: prefer separate AUDIO track, fall back to last video variant
+    sub_url = None
+    for media in playlist.media:
+        if media.type == "AUDIO" and media.uri:
+            sub_url = _resolve(master_url, media.uri)
+            break
+    if not sub_url and playlist.playlists:
+        sub_url = _resolve(master_url, playlist.playlists[-1].uri)
+    if not sub_url:
+        _LOGGER.warning("_download_signed_hls[%s]: no sub-playlist in master", lecture_id)
+        return None
+
+    # Fetch segment-level playlist (handle one level of nesting)
+    r = session.get(sub_url, timeout=20)
+    if not r.ok:
+        _LOGGER.warning("_download_signed_hls[%s]: sub-playlist %d at %s", lecture_id, r.status_code, sub_url[:80])
+        return None
+    seg_pl = m3u8_lib.loads(r.text, uri=sub_url)
+    if not seg_pl.segments and seg_pl.playlists:
+        nested_url = _resolve(sub_url, seg_pl.playlists[0].uri)
+        r = session.get(nested_url, timeout=20)
+        if not r.ok:
+            return None
+        seg_pl = m3u8_lib.loads(r.text, uri=nested_url)
+        sub_url = nested_url
+
+    segment_urls = [_resolve(sub_url, seg.uri) for seg in seg_pl.segments]
+    if not segment_urls:
+        _LOGGER.warning("_download_signed_hls[%s]: segment list is empty", lecture_id)
+        return None
+
+    _LOGGER.info("_download_signed_hls[%s]: downloading %d segments", lecture_id, len(segment_urls))
+
+    def _fetch(args):
+        idx, url = args
+        for _ in range(3):
+            try:
+                resp = session.get(url, timeout=30)
+                if resp.ok:
+                    return idx, resp.content
+            except Exception:
+                pass
+            time.sleep(1)
+        return idx, None
+
+    os.makedirs(output_dir, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(dir=output_dir)
+    segment_data: dict[int, bytes] = {}
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as pool:
+            for idx, data in pool.map(_fetch, enumerate(segment_urls)):
+                if data is None:
+                    _LOGGER.warning("_download_signed_hls[%s]: segment %d failed, aborting", lecture_id, idx)
+                    return None
+                segment_data[idx] = data
+
+        ext = segment_urls[0].split("?")[0].rsplit(".", 1)[-1] if segment_urls else "ts"
+        raw_path = os.path.join(output_dir, f"{filename}_raw.{ext}")
+        with open(raw_path, "wb") as f:
+            for i in range(len(segment_urls)):
+                f.write(segment_data[i])
+        _LOGGER.info("_download_signed_hls[%s]: wrote %s", lecture_id, raw_path)
+        return raw_path
+    finally:
+        try:
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
 def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None:
     """Blocking Chrome-based download. Runs in a thread executor."""
     from echo360.videos import EchoCloudVideo
@@ -250,8 +352,15 @@ def _download_chrome_fallback(row, output_dir: str, filename: str) -> str | None
                 "_download_chrome_fallback[%s]: found M3U8 via polling: %s",
                 lecture_id, found_url[:80],
             )
-            video._url = [found_url]
-        # Use the existing download which produces a raw .ts file (we skip conversion here)
+            # Build session with Chrome's current cookies (includes live-domain cookies
+            # acquired while the classroom page loaded its video player).
+            import requests as _requests
+            session = _requests.Session()
+            for c in driver.get_cookies():
+                session.cookies.set(c["name"], c["value"])
+            return _download_signed_hls(session, found_url, output_dir, filename, lecture_id)
+
+        # Normal path: video.url was resolved from JSON — use existing download
         result = video.download(output_dir, filename, audio_only=True)
         if result:
             # Find the raw or opus file produced
