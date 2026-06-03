@@ -100,7 +100,9 @@ def _launch_chrome(url: str, port: int = _CDP_PORT) -> subprocess.Popen:
         "--disable-gpu",
         "--disable-background-networking",
         "--disable-extensions",
-        # No --headless: we need full rendering for SSO pages
+        # headless=new is a full renderer (SSO pages work) and supports
+        # Page.startScreencast — required since the container has no display.
+        "--headless=new",
         url,
     ]
     _LOGGER.info("Launching Chrome: %s", " ".join(args))
