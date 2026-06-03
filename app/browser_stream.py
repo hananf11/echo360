@@ -6,6 +6,7 @@ Automatically detects ECHO_JWT cookie and saves the session.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
@@ -33,17 +34,57 @@ def _chrome_binary() -> str:
     return os.environ.get("CHROME_BIN", "google-chrome")
 
 
+def _jwt_exp(token: str) -> int | None:
+    """Return the `exp` (unix seconds) claim from a JWT, or None if unreadable.
+
+    Payload only — no signature verification (we just need the expiry time).
+    """
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # restore base64 padding
+        claims = json.loads(base64.urlsafe_b64decode(payload_b64))
+        exp = claims.get("exp")
+        return int(exp) if exp is not None else None
+    except (IndexError, ValueError, json.JSONDecodeError, TypeError):
+        return None
+
+
 def check_session_status() -> dict:
-    """Check if a valid session cookie file exists."""
+    """Check whether a non-expired Echo360 session cookie exists.
+
+    The ECHO_JWT is a short-lived (~13h) JWT and is stored as a session cookie
+    (no cookie-level expiry), so the only reliable signal is the JWT `exp` claim.
+    Returns `valid` reflecting actual expiry, plus `expires_at` / `expires_in`
+    so the UI can warn before the token dies instead of failing silently.
+    """
     if not os.path.exists(_COOKIES_FILE):
-        return {"valid": False, "cookies_exist": False}
+        return {"valid": False, "cookies_exist": False, "expires_at": None, "expires_in": None}
     try:
         with open(_COOKIES_FILE) as f:
             cookies = json.load(f)
-        has_jwt = any("ECHO_JWT" in c.get("name", "") for c in cookies)
-        return {"valid": has_jwt, "cookies_exist": True}
     except (json.JSONDecodeError, OSError):
-        return {"valid": False, "cookies_exist": True}
+        return {"valid": False, "cookies_exist": True, "expires_at": None, "expires_in": None}
+
+    jwt = next((c.get("value", "") for c in cookies if c.get("name") == "ECHO_JWT"), None)
+    if not jwt:
+        return {"valid": False, "cookies_exist": True, "expires_at": None, "expires_in": None}
+
+    exp = _jwt_exp(jwt)
+    if exp is None:
+        # Token present but unreadable — treat as present-but-unknown, lean invalid
+        _LOGGER.warning("check_session_status: ECHO_JWT present but exp claim unreadable")
+        return {"valid": False, "cookies_exist": True, "expires_at": None, "expires_in": None}
+
+    now = int(time.time())
+    expires_in = exp - now
+    valid = expires_in > 0
+    _LOGGER.debug("check_session_status: valid=%s expires_in=%ds", valid, expires_in)
+    return {
+        "valid": valid,
+        "cookies_exist": True,
+        "expires_at": exp,
+        "expires_in": expires_in,
+    }
 
 
 def _launch_chrome(url: str, port: int = _CDP_PORT) -> subprocess.Popen:

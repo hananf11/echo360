@@ -75,6 +75,31 @@ def _load_session(driver, hostname: str) -> bool:
     return has_jwt
 
 
+def _save_session(driver) -> None:
+    """Persist the driver's current cookies back to the session file.
+
+    Echo360 runs a sliding session: while the server-side session (PLAY_SESSION)
+    is alive, navigating reissues a fresh, longer-lived ECHO_JWT via Set-Cookie.
+    Writing the driver's cookies back after each successful op captures that
+    rotation, so an actively-used session never hits the ~13h JWT wall.
+    """
+    try:
+        cookies = driver.get_cookies()
+    except Exception:
+        _LOGGER.debug("_save_session: could not read driver cookies", exc_info=True)
+        return
+    if not any(c.get("name") == "ECHO_JWT" for c in cookies):
+        _LOGGER.debug("_save_session: no ECHO_JWT in driver cookies, not overwriting")
+        return
+    try:
+        os.makedirs(os.path.dirname(_COOKIES_FILE), exist_ok=True)
+        with open(_COOKIES_FILE, "w") as f:
+            json.dump(cookies, f)
+        _LOGGER.info("_save_session: persisted %d refreshed cookies", len(cookies))
+    except OSError:
+        _LOGGER.warning("_save_session: failed to write cookies file", exc_info=True)
+
+
 def _extract_hostname(url: str) -> str:
     m = re.search(r"https?://[^/]+", url)
     return m.group() if m else url
@@ -164,6 +189,9 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
 
         _LOGGER.info("discover_course_urls: extracted %d unique section URLs", len(urls))
 
+        # Persist any refreshed cookies the server handed back during navigation
+        _save_session(driver)
+
         if not urls:
             raise RuntimeError(
                 f"No courses found on that page (landed on: {current_url}). "
@@ -209,6 +237,8 @@ def sync_course(course_id: int, course_url: str) -> None:
             )
 
         _LOGGER.info("sync_course[%d]: session OK, fetching course data", course_id)
+        # Session was just warmed by _load_session — persist any refreshed cookies
+        _save_session(driver)
         course = EchoCloudCourse(section_id, hostname, alternative_feeds=False)
         course.set_driver(driver)
 
