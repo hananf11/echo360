@@ -234,6 +234,16 @@ async def run_browser_stream(ws_frontend, login_url: str):
             await cdp_send("Page.enable")
             await cdp_send("Network.enable")
 
+            # Pin the viewport to exactly the canvas size. Without this,
+            # --window-size=1280x800 yields a ~1280x661 viewport, so screencast
+            # frames don't match the canvas and mouse coordinates are skewed.
+            await cdp_send("Emulation.setDeviceMetricsOverride", {
+                "width": _VIEWPORT_WIDTH,
+                "height": _VIEWPORT_HEIGHT,
+                "deviceScaleFactor": 1,
+                "mobile": False,
+            })
+
             # Start screencast
             await cdp_send("Page.startScreencast", {
                 "format": "jpeg",
