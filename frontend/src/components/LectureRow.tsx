@@ -284,7 +284,6 @@ export default function LectureRow({ lecture, hostname, isLast, selected, onTogg
           lectureId={lecture.id}
           hasTranscript={hasTranscript}
           hasNotes={lecture.notes_status === 'done'}
-          framesStatus={lecture.frames_status}
           isLast={isLast}
         />
       )}

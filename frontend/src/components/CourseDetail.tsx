@@ -57,7 +57,6 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
               update.transcript_status = 'transcribing'
             }
             if (msg.audio_path !== undefined) update.audio_path = msg.audio_path
-            if (msg.frames_status) update.frames_status = msg.frames_status as Lecture['frames_status']
             if (msg.error) update.error_message = msg.error
             if (msg.status && msg.status !== 'error') update.error_message = null
             return { ...l, ...update }
@@ -124,27 +123,6 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
       setLectures(prev =>
         prev.map(l =>
           l.id === msg.lecture_id ? { ...l, notes_status: 'error', error_message: msg.error || l.error_message } : l
-        )
-      )
-    }
-    if (msg.type === 'frames_start' && msg.lecture_id !== undefined) {
-      setLectures(prev =>
-        prev.map(l =>
-          l.id === msg.lecture_id ? { ...l, frames_status: 'extracting' } : l
-        )
-      )
-    }
-    if (msg.type === 'frames_done' && msg.lecture_id !== undefined) {
-      setLectures(prev =>
-        prev.map(l =>
-          l.id === msg.lecture_id ? { ...l, frames_status: 'done' } : l
-        )
-      )
-    }
-    if (msg.type === 'frames_error' && msg.lecture_id !== undefined) {
-      setLectures(prev =>
-        prev.map(l =>
-          l.id === msg.lecture_id ? { ...l, frames_status: 'error', error_message: msg.error || l.error_message } : l
         )
       )
     }

@@ -113,18 +113,6 @@ export const generateNotesAll = (courseId: number, model: string): Promise<{ que
     body: JSON.stringify({ model }),
   }).then(r => _json(r))
 
-export const extractFrames = (id: number): Promise<{ status: string }> =>
-  fetch(`${BASE}/lectures/${id}/extract-frames`, { method: 'POST' }).then(r => _json(r))
-
-export interface FrameInfo {
-  url: string
-  time: number
-  reason: string
-}
-
-export const getFrames = (id: number): Promise<FrameInfo[]> =>
-  fetch(`${BASE}/lectures/${id}/frames`).then(r => _json(r))
-
 export const redownloadLecture = (id: number): Promise<{ status: string }> =>
   fetch(`${BASE}/lectures/${id}/redownload`, { method: 'POST' }).then(r => _json(r))
 

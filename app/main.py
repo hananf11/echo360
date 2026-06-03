@@ -122,7 +122,6 @@ class PipelineRequest(BaseModel):
     from_stage: str = "audio"
     transcript_model: str = "groq"
     notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct"
-    run_frames: bool = True
     force: bool = False
 
 
@@ -585,7 +584,6 @@ def get_notes(lecture_id: int):
     return {
         "model": note.model,
         "content_md": note.content_md,
-        "frame_timestamps": json.loads(note.frame_timestamps) if note.frame_timestamps else [],
         "action_items": json.loads(note.action_items) if note.action_items else [],
         "created_at": note.created_at,
     }
@@ -616,82 +614,6 @@ def generate_notes_all(course_id: int, req: GenerateNotesRequest | None = None):
                 lec.notes_status = "queued"
         jobs.enqueue_generate_notes(lid, model)
     return {"queued": len(lecture_ids)}
-
-
-# ── Frames ─────────────────────────────────────────────────────────────────────
-
-@app.post("/api/lectures/{lecture_id}/extract-frames")
-def extract_frames(lecture_id: int):
-    with get_db() as session:
-        lec = session.get(Lecture, lecture_id)
-        if not lec:
-            raise HTTPException(404, "Lecture not found")
-        if lec.notes_status != "done":
-            raise HTTPException(400, "Notes not generated yet")
-
-    with get_db() as session:
-        lec = session.get(Lecture, lecture_id)
-        if lec:
-            lec.frames_status = "queued"
-    jobs.enqueue_extract_frames(lecture_id)
-    return {"status": "queued"}
-
-
-@app.get("/api/lectures/{lecture_id}/frames")
-def get_frames(lecture_id: int):
-    with get_db() as session:
-        lec = session.get(Lecture, lecture_id)
-        if not lec:
-            raise HTTPException(404, "Lecture not found")
-        course_name = lec.course.name
-        row = lec.to_dict()
-
-        note = (
-            session.query(Note)
-            .filter(Note.lecture_id == lecture_id)
-            .order_by(Note.id.desc())
-            .first()
-        )
-        frame_timestamps = json.loads(note.frame_timestamps) if note and note.frame_timestamps else []
-
-    if not frame_timestamps:
-        return []
-
-    course_dir = os.path.join(AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name))
-    frames_dir = os.path.join(course_dir, "frames")
-    filename_base = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
-
-    frames = []
-    for ft in frame_timestamps:
-        ts = int(ft["time"])
-        frame_file = f"{filename_base}_{ts}s.jpg"
-        frame_path = os.path.join(frames_dir, frame_file)
-        if os.path.exists(frame_path):
-            frames.append({
-                "url": f"/api/lectures/{lecture_id}/frames/{ts}",
-                "time": ft["time"],
-                "reason": ft["reason"],
-            })
-    return frames
-
-
-@app.get("/api/lectures/{lecture_id}/frames/{timestamp}")
-def get_frame_image(lecture_id: int, timestamp: int):
-    with get_db() as session:
-        lec = session.get(Lecture, lecture_id)
-        if not lec:
-            raise HTTPException(404, "Lecture not found")
-        course_name = lec.course.name
-        row = lec.to_dict()
-
-    course_dir = os.path.join(AUDIO_DIR, re.sub(r'[\\/:*?"<>|]', "_", course_name))
-    frames_dir = os.path.join(course_dir, "frames")
-    filename_base = re.sub(r'[\\/:*?"<>|]', "_", f"{row['date']} - {row['title']}")[:150]
-    frame_path = os.path.join(frames_dir, f"{filename_base}_{timestamp}s.jpg")
-
-    if not os.path.exists(frame_path):
-        raise HTTPException(404, "Frame not found")
-    return FileResponse(frame_path, media_type="image/jpeg")
 
 
 # ── Global transcribe-all ────────────────────────────────────────────────────
@@ -777,7 +699,6 @@ def _enqueue_lecture_pipeline(lecture_id: int, course_name: str, req: PipelineRe
         from_stage=from_stage,
         transcript_model=req.transcript_model,
         notes_model=req.notes_model,
-        run_frames=req.run_frames,
     )
     return True
 
@@ -867,14 +788,12 @@ def get_pipeline_status():
             no_media = sum(1 for l in lectures if l.audio_status == "no_media")
             transcript_done = sum(1 for l in lectures if l.transcript_status == "done")
             notes_done = sum(1 for l in lectures if l.notes_status == "done")
-            frames_done = sum(1 for l in lectures if l.frames_status == "done")
             error_count = sum(1 for l in lectures if l.error_message)
             in_progress = sum(
                 1 for l in lectures
                 if l.audio_status in ("queued", "downloading", "downloaded", "converting")
                 or l.transcript_status in ("queued", "transcribing")
                 or l.notes_status in ("queued", "generating")
-                or l.frames_status in ("queued", "extracting")
             )
             result.append({
                 "course_id": course.id,
@@ -886,7 +805,6 @@ def get_pipeline_status():
                 "no_media": no_media,
                 "transcript_done": transcript_done,
                 "notes_done": notes_done,
-                "frames_done": frames_done,
                 "error_count": error_count,
                 "in_progress": in_progress,
                 "lectures": [lec.to_dict() for lec in lectures],

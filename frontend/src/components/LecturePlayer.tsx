@@ -1,16 +1,14 @@
 import { useState, useEffect, useRef } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { getTranscript, getNotes, extractFrames, getFrames } from '../api'
+import { getTranscript, getNotes } from '../api'
 import type { Transcript, Note } from '../types'
-import type { FrameInfo } from '../api'
-import { Play, Pause, FileText, BookOpen, Clock, Image as ImageIcon, CheckSquare } from 'lucide-react'
+import { Play, Pause, FileText, BookOpen, CheckSquare } from 'lucide-react'
 
 interface Props {
   lectureId: number
   hasTranscript: boolean
   hasNotes: boolean
-  framesStatus: string
   isLast: boolean
 }
 
@@ -22,7 +20,7 @@ function formatTime(seconds: number): string {
   return `${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
 }
 
-export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, framesStatus, isLast }: Props) {
+export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, isLast }: Props) {
   const audioRef = useRef<HTMLAudioElement>(null)
   const activeRef = useRef<HTMLDivElement>(null)
   const transcriptScrollRef = useRef<HTMLDivElement>(null)
@@ -31,8 +29,6 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
   const [transcriptError, setTranscriptError] = useState<string | null>(null)
   const [notes, setNotes] = useState<Note | null>(null)
   const [notesError, setNotesError] = useState<string | null>(null)
-  const [frames, setFrames] = useState<FrameInfo[]>([])
-  const [extractingFrames, setExtractingFrames] = useState(framesStatus === 'extracting' || framesStatus === 'queued')
   const [currentTime, setCurrentTime] = useState(0)
   const [duration, setDuration] = useState(0)
   const [playing, setPlaying] = useState(false)
@@ -52,28 +48,6 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
       .then(setNotes)
       .catch(e => setNotesError(e.message))
   }, [lectureId, hasNotes])
-
-  useEffect(() => {
-    if (framesStatus === 'done') {
-      getFrames(lectureId).then(setFrames).catch(() => {})
-      setExtractingFrames(false)
-    }
-    if (framesStatus === 'extracting' || framesStatus === 'queued') {
-      setExtractingFrames(true)
-    }
-    if (framesStatus === 'error') {
-      setExtractingFrames(false)
-    }
-  }, [lectureId, framesStatus])
-
-  const handleExtractFrames = async () => {
-    setExtractingFrames(true)
-    try {
-      await extractFrames(lectureId)
-    } catch {
-      setExtractingFrames(false)
-    }
-  }
 
   // Scroll active segment into view within the transcript container only
   useEffect(() => {
@@ -316,58 +290,6 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
                               </li>
                             ))}
                           </ul>
-                        </div>
-                      )}
-
-                      {/* Frame timestamps */}
-                      {notes.frame_timestamps.length > 0 && (
-                        <div className="px-5 pb-4 border-t border-slate-700/40 pt-4 mx-1">
-                          <div className="flex items-center justify-between mb-3">
-                            <p className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 uppercase tracking-wider">
-                              <Clock size={12} />
-                              Key Moments
-                            </p>
-                            {framesStatus !== 'done' && (
-                              <button
-                                onClick={handleExtractFrames}
-                                disabled={extractingFrames}
-                                className="flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-md bg-cyan-700/60 hover:bg-cyan-600 text-cyan-300 hover:text-white transition-colors disabled:opacity-40"
-                                title="Extract video frames at these timestamps"
-                              >
-                                {extractingFrames ? (
-                                  <div className="w-2.5 h-2.5 border-[1.5px] border-cyan-400 border-t-transparent rounded-full animate-spin" />
-                                ) : (
-                                  <ImageIcon size={11} />
-                                )}
-                                {extractingFrames ? 'Extracting…' : 'Extract Frames'}
-                              </button>
-                            )}
-                          </div>
-                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                            {notes.frame_timestamps.map((ft, i) => {
-                              const frame = frames.find(f => Math.abs(f.time - ft.time) < 1)
-                              return (
-                                <div key={i} className="bg-slate-800/50 border border-slate-700/40 rounded-lg overflow-hidden">
-                                  {frame && (
-                                    <img
-                                      src={frame.url}
-                                      alt={ft.reason}
-                                      className="w-full h-auto"
-                                      loading="lazy"
-                                    />
-                                  )}
-                                  <button
-                                    onClick={() => seekTo(ft.time)}
-                                    className="flex items-start gap-2 px-3 py-2 w-full text-left hover:bg-amber-500/10 transition-colors group"
-                                    title={ft.reason}
-                                  >
-                                    <span className="font-mono text-[11px] text-amber-400 shrink-0 pt-0.5 tabular-nums group-hover:text-amber-300">{formatTime(ft.time)}</span>
-                                    <span className="text-xs text-slate-400 group-hover:text-slate-300 line-clamp-2">{ft.reason}</span>
-                                  </button>
-                                </div>
-                              )
-                            })}
-                          </div>
                         </div>
                       )}
                     </>

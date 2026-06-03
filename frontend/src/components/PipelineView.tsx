@@ -5,14 +5,13 @@ import type { PipelineStatus, Lecture, PipelineConfig, SSEMessage } from '../typ
 import { getPipelineStatus, runLecturePipeline, runCoursePipeline, runGlobalPipeline } from '../api'
 import { useSSE } from '../hooks/useSSE'
 
-const STAGES = ['audio', 'transcript', 'notes', 'frames'] as const
+const STAGES = ['audio', 'transcript', 'notes'] as const
 type Stage = typeof STAGES[number]
 
 const STAGE_STATUS_FIELD: Record<Stage, keyof Lecture> = {
   audio: 'audio_status',
   transcript: 'transcript_status',
   notes: 'notes_status',
-  frames: 'frames_status',
 }
 
 const STAGE_MODEL_FIELD: Record<string, keyof Lecture> = {
@@ -24,11 +23,10 @@ const STAGE_LABELS: Record<Stage, string> = {
   audio: 'Audio',
   transcript: 'Transcript',
   notes: 'Notes',
-  frames: 'Frames',
 }
 
 const IN_PROGRESS_STATUSES = new Set([
-  'queued', 'downloading', 'downloaded', 'converting', 'transcribing', 'generating', 'extracting',
+  'queued', 'downloading', 'downloaded', 'converting', 'transcribing', 'generating',
 ])
 
 function statusColor(status: string): string {
@@ -158,11 +156,10 @@ function CourseNode({ course, config }: { course: PipelineStatus; config: Pipeli
         >
           {course.display_name || course.course_name}
         </Link>
-        <div className="flex-1 grid grid-cols-4 gap-3">
+        <div className="flex-1 grid grid-cols-3 gap-3">
           <ProgressBar done={course.audio_done} total={eligible} color="bg-indigo-500" />
           <ProgressBar done={course.transcript_done} total={eligible} color="bg-cyan-500" />
           <ProgressBar done={course.notes_done} total={eligible} color="bg-amber-500" />
-          <ProgressBar done={course.frames_done} total={eligible} color="bg-purple-500" />
         </div>
         <span className="text-xs text-slate-500 w-16 text-right">{eligible} lec</span>
         <button
@@ -195,9 +192,8 @@ function PlatformSummary({ data }: { data: PipelineStatus[] }) {
         audio: acc.audio + c.audio_done,
         transcript: acc.transcript + c.transcript_done,
         notes: acc.notes + c.notes_done,
-        frames: acc.frames + c.frames_done,
       }),
-      { total: 0, no_media: 0, audio: 0, transcript: 0, notes: 0, frames: 0 },
+      { total: 0, no_media: 0, audio: 0, transcript: 0, notes: 0 },
     )
   }, [data])
 
@@ -207,11 +203,10 @@ function PlatformSummary({ data }: { data: PipelineStatus[] }) {
     { label: 'Audio', done: totals.audio, color: 'bg-indigo-500' },
     { label: 'Transcript', done: totals.transcript, color: 'bg-cyan-500' },
     { label: 'Notes', done: totals.notes, color: 'bg-amber-500' },
-    { label: 'Frames', done: totals.frames, color: 'bg-purple-500' },
   ]
 
   return (
-    <div className="grid grid-cols-4 gap-4 mb-6">
+    <div className="grid grid-cols-3 gap-4 mb-6">
       {bars.map(b => (
         <div key={b.label} className="bg-slate-800/60 rounded-lg p-3 border border-slate-700/50">
           <div className="text-xs text-slate-400 mb-1">{b.label}</div>
@@ -283,22 +278,12 @@ function PipelineToolbar({
           </optgroup>
         </select>
       </label>
-      <label className="text-xs text-slate-400 flex items-center gap-1.5">
-        <input
-          type="checkbox"
-          checked={config.run_frames ?? true}
-          onChange={e => setConfig({ ...config, run_frames: e.target.checked })}
-          className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
-        />
-        Frames
-      </label>
       <div className="flex-1" />
 
-      <div className="hidden lg:grid grid-cols-4 gap-3 w-[320px] mr-[88px]">
+      <div className="hidden lg:grid grid-cols-3 gap-3 w-[320px] mr-[88px]">
         <span className="text-[10px] text-indigo-400 text-center">Audio</span>
         <span className="text-[10px] text-cyan-400 text-center">Transcript</span>
         <span className="text-[10px] text-amber-400 text-center">Notes</span>
-        <span className="text-[10px] text-purple-400 text-center">Frames</span>
       </div>
 
       <button
@@ -319,7 +304,6 @@ export default function PipelineView() {
   const [config, setConfig] = useState<PipelineConfig>({
     transcript_model: 'modal',
     notes_model: 'auto',
-    run_frames: true,
   })
 
   const fetchData = useCallback(() => {
@@ -353,12 +337,6 @@ export default function PipelineView() {
         updated.notes_status = 'error'
         if (msg.error) updated.error_message = msg.error
       }
-      if (msg.type === 'frames_start') updated.frames_status = 'extracting'
-      if (msg.type === 'frames_done') updated.frames_status = 'done'
-      if (msg.type === 'frames_error') {
-        updated.frames_status = 'error'
-        if (msg.error) updated.error_message = msg.error
-      }
       return updated
     }
 
@@ -372,13 +350,11 @@ export default function PipelineView() {
           no_media: updatedLectures.filter(l => l.audio_status === 'no_media').length,
           transcript_done: updatedLectures.filter(l => l.transcript_status === 'done').length,
           notes_done: updatedLectures.filter(l => l.notes_status === 'done').length,
-          frames_done: updatedLectures.filter(l => l.frames_status === 'done').length,
           error_count: updatedLectures.filter(l => l.error_message).length,
           in_progress: updatedLectures.filter(l =>
             ['queued', 'downloading', 'downloaded', 'converting'].includes(l.audio_status)
             || ['queued', 'transcribing'].includes(l.transcript_status)
             || ['queued', 'generating'].includes(l.notes_status)
-            || ['queued', 'extracting'].includes(l.frames_status)
           ).length,
         }
       }),

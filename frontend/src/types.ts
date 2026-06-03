@@ -31,7 +31,6 @@ export interface Lecture {
   notes_status: 'pending' | 'queued' | 'generating' | 'done' | 'error'
   notes_model: string | null
   notes_generated_title: string | null
-  frames_status: 'pending' | 'queued' | 'extracting' | 'done' | 'error'
   duration_seconds: number | null
   error_message: string | null
 }
@@ -45,7 +44,6 @@ export interface Transcript {
 export interface Note {
   model: string
   content_md: string
-  frame_timestamps: { time: number; reason: string }[]
   action_items: { task: string; due_date: string | null }[]
   created_at: string
 }
@@ -60,7 +58,6 @@ export interface PipelineStatus {
   no_media: number
   transcript_done: number
   notes_done: number
-  frames_done: number
   error_count: number
   in_progress: number
   lectures: Lecture[]
@@ -70,7 +67,6 @@ export interface PipelineConfig {
   from_stage?: string
   transcript_model?: string
   notes_model?: string
-  run_frames?: boolean
   force?: boolean
 }
 
@@ -83,7 +79,6 @@ export interface SSEMessage {
   course_name?: string
   count?: number
   audio_path?: string | null
-  frames_status?: string
   progress?: {
     done: number
     total: number

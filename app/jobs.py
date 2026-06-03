@@ -10,12 +10,11 @@ from typing import AsyncIterator
 
 _LOGGER = logging.getLogger(__name__)
 
-STAGES = ["audio", "transcript", "notes", "frames"]
+STAGES = ["audio", "transcript", "notes"]
 STAGE_STATUS_FIELDS = {
     "audio": "audio_status",
     "transcript": "transcript_status",
     "notes": "notes_status",
-    "frames": "frames_status",
 }
 
 _loop: asyncio.AbstractEventLoop | None = None
@@ -154,21 +153,6 @@ def enqueue_generate_notes(lecture_id: int, model: str) -> None:
         _schedule(_run())
 
 
-def enqueue_extract_frames(lecture_id: int) -> None:
-    """Schedule an async frame extraction task, gated by the notes semaphore."""
-    from app import frame_extractor
-
-    async def _run():
-        async with _notes_sem:
-            try:
-                await frame_extractor.extract_frames(lecture_id)
-            except Exception:
-                _LOGGER.exception("Frame extraction failed for lecture %d", lecture_id)
-
-    if _loop is not None and _notes_sem is not None:
-        _schedule(_run())
-
-
 def enqueue_clean_titles(course_id: int) -> None:
     """Schedule an async title cleanup task, gated by the notes semaphore."""
     from app import title_cleaner
@@ -186,20 +170,16 @@ def enqueue_clean_titles(course_id: int) -> None:
 
 def enqueue_pipeline(lecture_id: int, output_dir: str, from_stage: str = "audio",
                      transcript_model: str = "groq",
-                     notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct",
-                     run_frames: bool = True) -> None:
+                     notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct") -> None:
     """Chain stages sequentially for one lecture, starting from from_stage."""
     _LOGGER.info(
-        "enqueue_pipeline[%d]: from=%s transcript=%s notes=%s frames=%s",
-        lecture_id, from_stage, transcript_model, notes_model, run_frames,
+        "enqueue_pipeline[%d]: from=%s transcript=%s notes=%s",
+        lecture_id, from_stage, transcript_model, notes_model,
     )
 
     async def _run():
         stages = STAGES[STAGES.index(from_stage):]
         for stage in stages:
-            if stage == "frames" and not run_frames:
-                _LOGGER.debug("enqueue_pipeline[%d]: skipping frames stage", lecture_id)
-                continue
             _LOGGER.info("enqueue_pipeline[%d]: starting stage=%s", lecture_id, stage)
             await _run_stage(stage, lecture_id, output_dir, transcript_model, notes_model)
             if not _stage_succeeded(lecture_id, stage):
@@ -240,13 +220,6 @@ async def _run_stage(stage: str, lecture_id: int, output_dir: str,
                 await note_generator.generate_notes(lecture_id, notes_model)
             except Exception:
                 _LOGGER.exception("Pipeline notes failed for lecture %d", lecture_id)
-    elif stage == "frames":
-        from app import frame_extractor
-        async with _notes_sem:
-            try:
-                await frame_extractor.extract_frames(lecture_id)
-            except Exception:
-                _LOGGER.exception("Pipeline frames failed for lecture %d", lecture_id)
 
 
 def _stage_succeeded(lecture_id: int, stage: str) -> bool:

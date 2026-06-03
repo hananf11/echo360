@@ -20,10 +20,6 @@ You MUST respond with a single JSON object matching this exact schema:
 {
   "notes": "<structured markdown notes>",
   "title": "<short descriptive title for this lecture>",
-  "frame_timestamps": [
-    {"time": <seconds as number>, "reason": "<what visual is likely shown>"},
-    ...
-  ],
   "action_items": [
     {"task": "<assignment, reading, deadline, or task mentioned>", "due_date": "<exact date or null>"},
     ...
@@ -65,17 +61,6 @@ Rules for "title":
 - Do NOT include the course name, course code, lecture number, or date.
 - Examples: "Introduction to MapReduce", "Scientific Reasoning and Citation", "Mātauranga Māori and Worldview"
 
-Rules for "frame_timestamps":
-- Identify moments where visual content is likely being shown or changed. Include timestamps for:
-  1. Explicit visual references ("as you can see", "on this slide", "this diagram shows")
-  2. Topic transitions where a new slide is likely shown (new subject introduced, "let's move on to", "next we have")
-  3. When formulas, equations, or code are being explained in detail (likely written on screen)
-  4. When examples with specific data, tables, or figures are discussed
-  5. When the speaker describes spatial/visual concepts (graphs, architectures, flowcharts)
-- Each entry needs "time" (seconds from start, as a number) and "reason" (brief description of likely visual content)
-- Aim for at least 5-15 timestamps for a typical lecture. More for visually heavy lectures.
-- If the lecture is purely conversational with zero visual references, return an empty array, but this should be rare.
-
 Rules for "action_items":
 - Extract any assignments, readings, deadlines, or tasks mentioned by the lecturer.
 - Each item has "task" (description of what to do) and "due_date" (exact date string like "2024-03-15" or null if no date mentioned).
@@ -101,25 +86,6 @@ RESPONSE_SCHEMA = {
                     "type": "string",
                     "description": "Short descriptive title for the lecture (3-8 words)",
                 },
-                "frame_timestamps": {
-                    "type": "array",
-                    "description": "Timestamps where visual content is likely shown",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "time": {
-                                "type": "number",
-                                "description": "Timestamp in seconds from start",
-                            },
-                            "reason": {
-                                "type": "string",
-                                "description": "Brief description of likely visual content",
-                            },
-                        },
-                        "required": ["time", "reason"],
-                        "additionalProperties": False,
-                    },
-                },
                 "action_items": {
                     "type": "array",
                     "description": "Assignments, readings, deadlines, or tasks mentioned",
@@ -140,7 +106,7 @@ RESPONSE_SCHEMA = {
                     },
                 },
             },
-            "required": ["title", "notes", "frame_timestamps", "action_items"],
+            "required": ["title", "notes", "action_items"],
             "additionalProperties": False,
         },
     },
@@ -160,8 +126,8 @@ def _format_transcript(segments: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def _parse_response(raw: str) -> tuple[str, str, list[dict], list[dict]]:
-    """Parse JSON response into title, markdown notes, frame timestamps, and action items."""
+def _parse_response(raw: str) -> tuple[str, str, list[dict]]:
+    """Parse JSON response into title, markdown notes, and action items."""
     # Strip markdown code fences if the model wrapped the JSON
     text = raw.strip()
     if text.startswith("```"):
@@ -179,21 +145,6 @@ def _parse_response(raw: str) -> tuple[str, str, list[dict], list[dict]]:
 
     title = data.get("title", "").strip()
     notes_md = data.get("notes", "").strip()
-    frame_timestamps = data.get("frame_timestamps", [])
-
-    # Validate frame_timestamps structure
-    validated = []
-    for ft in frame_timestamps:
-        if isinstance(ft, dict) and "time" in ft and "reason" in ft:
-            try:
-                validated.append({
-                    "time": float(ft["time"]),
-                    "reason": str(ft["reason"]),
-                })
-            except (ValueError, TypeError):
-                continue
-    # Sort by time
-    validated.sort(key=lambda x: x["time"])
 
     # Validate action_items structure
     action_items = []
@@ -204,7 +155,7 @@ def _parse_response(raw: str) -> tuple[str, str, list[dict], list[dict]]:
                 "due_date": str(item["due_date"]) if item.get("due_date") else None,
             })
 
-    return title, notes_md, validated, action_items
+    return title, notes_md, action_items
 
 
 def _is_schema_error(err: Exception) -> bool:
@@ -314,11 +265,11 @@ async def generate_notes(lecture_id: int, model: str) -> None:
         if not content or not content.strip():
             raise RuntimeError("Empty response from LLM")
 
-        generated_title, notes_md, frame_timestamps, action_items = _parse_response(content)
+        generated_title, notes_md, action_items = _parse_response(content)
         if not notes_md:
             raise RuntimeError("Parsed notes are empty")
 
-        _LOGGER.info("Success with model: %s (title=%r, %d frame timestamps, %d action items)", llm_model, generated_title, len(frame_timestamps), len(action_items))
+        _LOGGER.info("Success with model: %s (title=%r, %d action items)", llm_model, generated_title, len(action_items))
 
         # Store in DB
         with get_db() as session:
@@ -327,7 +278,6 @@ async def generate_notes(lecture_id: int, model: str) -> None:
                 model=llm_model,
                 content_md=notes_md,
                 generated_title=generated_title or None,
-                frame_timestamps=json.dumps(frame_timestamps) if frame_timestamps else None,
                 action_items=json.dumps(action_items) if action_items else None,
             ))
             lec = session.get(Lecture, lecture_id)
