@@ -209,6 +209,66 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
 
 # ── Course sync ───────────────────────────────────────────────────────────────
 
+def _persist_refreshed_cookies(session) -> None:
+    """Merge any cookies the server rotated during a requests call back into the
+    saved session file, preserving existing cookie metadata (domain/path/etc.)."""
+    jar = {c.name: c for c in session.cookies}
+    if "ECHO_JWT" not in jar or not os.path.exists(_COOKIES_FILE):
+        return
+    try:
+        with open(_COOKIES_FILE) as f:
+            saved = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return
+    by_name = {c.get("name"): c for c in saved}
+    changed = False
+    for name, ck in jar.items():
+        if name in by_name:
+            if by_name[name].get("value") != ck.value:
+                by_name[name]["value"] = ck.value
+                changed = True
+        else:
+            entry = {"name": name, "value": ck.value, "path": ck.path or "/"}
+            if ck.domain:
+                entry["domain"] = ck.domain
+            saved.append(entry)
+            changed = True
+    if changed:
+        try:
+            with open(_COOKIES_FILE, "w") as f:
+                json.dump(saved, f)
+            _LOGGER.info("_persist_refreshed_cookies: persisted rotated cookies")
+        except OSError:
+            _LOGGER.warning("_persist_refreshed_cookies: write failed", exc_info=True)
+
+
+def _fetch_syllabus_browserless(course_url: str) -> dict:
+    """Fetch course syllabus JSON via plain HTTP using saved cookies — no browser.
+
+    Raises on any inconclusive outcome (non-200, redirect to login, non-JSON
+    body) so the caller can fall back to the Selenium path, which handles
+    session warming and expiry detection.
+    """
+    hostname = _extract_hostname(course_url)
+    section_id = _extract_section_id(course_url)
+    syllabus_url = f"{hostname}/section/{section_id}/syllabus"
+
+    session = _build_session_from_cookies()
+    session.headers.update({"Accept": "application/json"})
+    # allow_redirects=False so a 30x to /login surfaces instead of being followed
+    resp = session.get(syllabus_url, allow_redirects=False, timeout=30)
+    if resp.status_code != 200:
+        raise RuntimeError(f"syllabus HTTP {resp.status_code} (likely auth redirect)")
+    text = resp.text.strip()
+    if not text.startswith("{"):
+        raise RuntimeError("syllabus body not JSON (likely login page)")
+    data = json.loads(text)
+    if "data" not in data:
+        raise RuntimeError("syllabus JSON missing 'data' key")
+    _persist_refreshed_cookies(session)
+    return data
+
+
 def sync_course(course_id: int, course_url: str) -> None:
     """Fetch course metadata and populate the lectures table. Runs in a worker thread."""
     from app.database import get_db
@@ -228,22 +288,39 @@ def sync_course(course_id: int, course_url: str) -> None:
 
     driver = None
     try:
-        driver = _build_driver()
-        if not _load_session(driver, hostname):
-            jobs.broadcast({"type": "session_expired"})
-            raise RuntimeError(
-                "No saved session found. Use the Re-authenticate button in the web UI, "
-                "or run: python echo360.py URL --chrome --persistent-session"
-            )
+        course_data = None
+        course_name = None
 
-        _LOGGER.info("sync_course[%d]: session OK, fetching course data", course_id)
-        # Session was just warmed by _load_session — persist any refreshed cookies
-        _save_session(driver)
-        course = EchoCloudCourse(section_id, hostname, alternative_feeds=False)
-        course.set_driver(driver)
+        # Fast path: fetch the syllabus directly with saved cookies, no browser.
+        try:
+            course_data = _fetch_syllabus_browserless(course_url)
+            course = EchoCloudCourse(section_id, hostname, alternative_feeds=False)
+            course.course_data = course_data
+            course_name = course.course_name
+            _LOGGER.info("sync_course[%d]: browserless fetch OK, course_name=%r", course_id, course_name)
+        except Exception as e:
+            _LOGGER.info("sync_course[%d]: browserless fetch failed (%s) — falling back to Selenium", course_id, e)
+            course_data = None
 
-        course_data = course._get_course_data()
-        course_name = course.course_name
+        # Fallback: full Selenium session (warms session, detects expiry).
+        if course_data is None:
+            driver = _build_driver()
+            if not _load_session(driver, hostname):
+                jobs.broadcast({"type": "session_expired"})
+                raise RuntimeError(
+                    "No saved session found. Use the Re-authenticate button in the web UI, "
+                    "or run: python echo360.py URL --chrome --persistent-session"
+                )
+
+            _LOGGER.info("sync_course[%d]: session OK, fetching course data", course_id)
+            # Session was just warmed by _load_session — persist any refreshed cookies
+            _save_session(driver)
+            course = EchoCloudCourse(section_id, hostname, alternative_feeds=False)
+            course.set_driver(driver)
+
+            course_data = course._get_course_data()
+            course_name = course.course_name
+
         _LOGGER.info("sync_course[%d]: course_name=%r, raw data keys=%s",
                      course_id, course_name, list(course_data.keys()) if isinstance(course_data, dict) else type(course_data).__name__)
 
