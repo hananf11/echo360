@@ -1,5 +1,5 @@
 import { Link } from '@tanstack/react-router'
-import { BookOpen, GitBranch, ListOrdered } from 'lucide-react'
+import { BookOpen, GitBranch, ListOrdered, AlertTriangle, Loader2 } from 'lucide-react'
 
 function NavTab({ to, icon: Icon, label }: { to: string; icon: typeof BookOpen; label: string }) {
   return (
@@ -18,10 +18,16 @@ function NavTab({ to, icon: Icon, label }: { to: string; icon: typeof BookOpen; 
 export default function Layout({
   activeCount,
   onOpenQueue,
+  sessionValid,
+  sessionRefreshing,
+  onOpenLogin,
   children,
 }: {
   activeCount: number
   onOpenQueue: () => void
+  sessionValid: boolean
+  sessionRefreshing: boolean
+  onOpenLogin: () => void
   children: React.ReactNode
 }) {
   return (
@@ -48,6 +54,29 @@ export default function Layout({
           </button>
         </div>
       </header>
+      {!sessionValid && (
+        <div className="bg-amber-900/50 border-b border-amber-700/50">
+          <div className="max-w-7xl mx-auto px-6 py-2 flex items-center gap-3">
+            {sessionRefreshing ? (
+              <>
+                <Loader2 size={16} className="text-amber-400 shrink-0 animate-spin" />
+                <span className="text-sm text-amber-200">Attempting to refresh session...</span>
+              </>
+            ) : (
+              <>
+                <AlertTriangle size={16} className="text-amber-400 shrink-0" />
+                <span className="text-sm text-amber-200">Echo360 session expired or missing</span>
+                <button
+                  onClick={onOpenLogin}
+                  className="ml-auto px-3 py-1 bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium rounded-md transition-colors"
+                >
+                  Re-authenticate
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
       {children}
     </div>
   )

@@ -92,6 +92,8 @@ def enqueue_download(lecture_id: int, output_dir: str) -> None:
     """Fire an async download task, gated by the concurrency semaphore."""
     from app import pipeline
 
+    _LOGGER.info("enqueue_download[%d]: output_dir=%s", lecture_id, output_dir)
+
     async def _run():
         async with _download_sem:
             try:
@@ -122,6 +124,7 @@ def enqueue_transcribe(lecture_id: int, model_name: str) -> None:
 
     is_local = model_name in _LOCAL_MODELS
     sem = _transcribe_local_sem if is_local else _transcribe_remote_sem
+    _LOGGER.info("enqueue_transcribe[%d]: model=%s local=%s", lecture_id, model_name, is_local)
 
     async def _run():
         async with sem:
@@ -137,6 +140,8 @@ def enqueue_transcribe(lecture_id: int, model_name: str) -> None:
 def enqueue_generate_notes(lecture_id: int, model: str) -> None:
     """Schedule an async note generation task, gated by the notes semaphore."""
     from app import note_generator
+
+    _LOGGER.info("enqueue_generate_notes[%d]: model=%s", lecture_id, model)
 
     async def _run():
         async with _notes_sem:
@@ -184,15 +189,26 @@ def enqueue_pipeline(lecture_id: int, output_dir: str, from_stage: str = "audio"
                      notes_model: str = "openrouter/meta-llama/llama-3.3-70b-instruct",
                      run_frames: bool = True) -> None:
     """Chain stages sequentially for one lecture, starting from from_stage."""
+    _LOGGER.info(
+        "enqueue_pipeline[%d]: from=%s transcript=%s notes=%s frames=%s",
+        lecture_id, from_stage, transcript_model, notes_model, run_frames,
+    )
 
     async def _run():
         stages = STAGES[STAGES.index(from_stage):]
         for stage in stages:
             if stage == "frames" and not run_frames:
+                _LOGGER.debug("enqueue_pipeline[%d]: skipping frames stage", lecture_id)
                 continue
+            _LOGGER.info("enqueue_pipeline[%d]: starting stage=%s", lecture_id, stage)
             await _run_stage(stage, lecture_id, output_dir, transcript_model, notes_model)
             if not _stage_succeeded(lecture_id, stage):
+                _LOGGER.warning(
+                    "enqueue_pipeline[%d]: stage=%s did not succeed, aborting pipeline",
+                    lecture_id, stage,
+                )
                 return
+            _LOGGER.info("enqueue_pipeline[%d]: stage=%s succeeded", lecture_id, stage)
 
     if _loop is not None:
         _schedule(_run())

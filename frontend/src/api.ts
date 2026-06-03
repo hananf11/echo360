@@ -194,3 +194,6 @@ export const runGlobalPipeline = (config?: PipelineConfig): Promise<{ queued: nu
 
 export const pushYearToOutline = (year: string): Promise<{ queued: number; year: string }> =>
   fetch(`${BASE}/outline/sync/${year}`, { method: 'POST' }).then(r => _json(r))
+
+export const syncLectureToOutline = (id: number): Promise<{ status: string; lecture_id: number }> =>
+  fetch(`${BASE}/lectures/${id}/outline-sync`, { method: 'POST' }).then(r => _json(r))

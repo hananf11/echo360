@@ -7,9 +7,9 @@ export const Route = createFileRoute('/_layout')({
 })
 
 function LayoutRoute() {
-  const { activeCount, onOpenQueue } = useRootContext()
+  const { activeCount, onOpenQueue, sessionValid, sessionRefreshing, onOpenLogin } = useRootContext()
   return (
-    <Layout activeCount={activeCount} onOpenQueue={onOpenQueue}>
+    <Layout activeCount={activeCount} onOpenQueue={onOpenQueue} sessionValid={sessionValid} sessionRefreshing={sessionRefreshing} onOpenLogin={onOpenLogin}>
       <Outlet />
     </Layout>
   )

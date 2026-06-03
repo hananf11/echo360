@@ -6,8 +6,14 @@ from litellm import Router
 _LOGGER = logging.getLogger(__name__)
 
 # Model groups for notes generation, in fallback order.
-# Each group has multiple deployments the router can cycle through.
+# notes → notes-paid → notes-free
 # On failure: retries within group → cooldown bad deployments → fallback to next group.
+NOTES_PAID = [
+    "openrouter/minimax/minimax-m2.1",
+    "openrouter/meta-llama/llama-3.3-70b-instruct",
+    "openrouter/google/gemini-2.5-flash-lite",
+]
+
 NOTES_FREE = [
     "openrouter/meta-llama/llama-3.3-70b-instruct:free",
     "openrouter/google/gemma-3-27b-it:free",
@@ -15,12 +21,6 @@ NOTES_FREE = [
     "openrouter/qwen/qwen3-next-80b-a3b-instruct:free",
     "openrouter/deepseek/deepseek-r1-0528:free",
     "openrouter/nousresearch/hermes-3-llama-3.1-405b:free",
-]
-
-NOTES_PAID = [
-    "openrouter/meta-llama/llama-3.3-70b-instruct",
-    "openrouter/google/gemini-2.5-flash-lite",
-    "openrouter/minimax/minimax-m2.1",
 ]
 
 TITLES_MODELS = [
@@ -31,26 +31,20 @@ TITLES_MODELS = [
 
 
 def _build_model_list() -> list[dict]:
-    """Build Router model_list.
-
-    - notes-free: multiple free-tier deployments (router cycles through on failure)
-    - notes-paid: multiple paid deployments (fallback when all free are exhausted)
-    - titles: multiple deployments for title cleanup
-    """
     model_list = []
-
-    for i, model in enumerate(NOTES_FREE):
-        model_list.append({
-            "model_name": "notes-free",
-            "litellm_params": {"model": model},
-            "model_info": {"id": f"notes-free-{i}"},
-        })
 
     for i, model in enumerate(NOTES_PAID):
         model_list.append({
             "model_name": "notes-paid",
             "litellm_params": {"model": model},
             "model_info": {"id": f"notes-paid-{i}"},
+        })
+
+    for i, model in enumerate(NOTES_FREE):
+        model_list.append({
+            "model_name": "notes-free",
+            "litellm_params": {"model": model},
+            "model_info": {"id": f"notes-free-{i}"},
         })
 
     for i, model in enumerate(TITLES_MODELS):
@@ -65,14 +59,14 @@ def _build_model_list() -> list[dict]:
 
 router = Router(
     model_list=_build_model_list(),
-    # notes-free fails → try notes-paid
-    fallbacks=[{"notes-free": ["notes-paid"]}],
+    # notes-paid fails → try notes-free
+    fallbacks=[{"notes-paid": ["notes-free"]}],
     # Within a group: cooldown a deployment after 1 failure, try another deployment
     allowed_fails=1,
     cooldown_time=30,
     # Retry within a group enough times to cycle through all deployments
     num_retries=5,
     retry_after=0,
-    # Alias so callers can just use model="notes"
-    model_group_alias={"notes": "notes-free"},
+    # Callers use model="notes" → routes to notes-paid (minimax first)
+    model_group_alias={"notes": "notes-paid"},
 )

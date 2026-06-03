@@ -1,8 +1,9 @@
 import { useState } from 'react'
-import { CheckCircle, AlertCircle, Clock, Play, Pause, Ban, ExternalLink } from 'lucide-react'
+import { CheckCircle, AlertCircle, Clock, Play, Pause, Ban, ExternalLink, UploadCloud } from 'lucide-react'
 import { format } from 'timeago.js'
 import type { Lecture, SSEMessage } from '../types'
 import LecturePlayer from './LecturePlayer'
+import { syncLectureToOutline } from '../api'
 
 function formatDuration(seconds: number): string {
   const h = Math.floor(seconds / 3600)
@@ -37,7 +38,7 @@ function formatEta(seconds: number): string {
 
 function formatDate(dateStr: string): string {
   const d = new Date(dateStr)
-  return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short' })
+  return d.toLocaleDateString('en-NZ', { day: 'numeric', month: 'short', timeZone: 'Pacific/Auckland' })
 }
 
 
@@ -160,10 +161,28 @@ function ProgressBar({ progress }: { progress: NonNullable<SSEMessage['progress'
 
 export default function LectureRow({ lecture, hostname, isLast, selected, onToggle, progress }: Props) {
   const [playerOpen, setPlayerOpen] = useState(false)
+  const [outlineSyncing, setOutlineSyncing] = useState(false)
+  const [outlineSynced, setOutlineSynced] = useState(false)
 
   const hasTranscript = lecture.transcript_status === 'done'
   const canPlay = lecture.audio_status === 'done'
   const showProgress = progress && progress.total > 0
+  const canSyncOutline = true
+
+  const handleOutlineSync = async () => {
+    if (outlineSyncing) return
+    setOutlineSyncing(true)
+    setOutlineSynced(false)
+    try {
+      await syncLectureToOutline(lecture.id)
+      setOutlineSynced(true)
+      setTimeout(() => setOutlineSynced(false), 3000)
+    } catch {
+      // silently ignore — backend will log
+    } finally {
+      setOutlineSyncing(false)
+    }
+  }
 
   return (
     <>
@@ -214,6 +233,25 @@ export default function LectureRow({ lecture, hostname, isLast, selected, onTogg
         {/* Actions */}
         <td className="px-4 py-3">
           <div className="flex items-center justify-end gap-1">
+            {canSyncOutline && (
+              <button
+                onClick={handleOutlineSync}
+                disabled={outlineSyncing}
+                className={`p-1.5 rounded-md transition-colors ${
+                  outlineSynced
+                    ? 'bg-emerald-600/30 text-emerald-400'
+                    : 'bg-slate-700/50 hover:bg-slate-600 text-slate-500 hover:text-white disabled:opacity-40'
+                }`}
+                title={outlineSynced ? 'Synced to Outline' : 'Sync to Outline'}
+              >
+                {outlineSyncing
+                  ? <div className="w-3 h-3 border-[1.5px] border-slate-400 border-t-transparent rounded-full animate-spin" />
+                  : outlineSynced
+                  ? <CheckCircle size={13} />
+                  : <UploadCloud size={13} />
+                }
+              </button>
+            )}
             {hostname && (
               <a
                 href={`${hostname}/lesson/${lecture.echo_id}/classroom`}

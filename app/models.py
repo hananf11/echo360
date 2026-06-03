@@ -80,6 +80,7 @@ class Note(Base):
     content_md = Column(Text, nullable=False)
     generated_title = Column(String)
     frame_timestamps = Column(Text)
+    action_items = Column(Text)
     created_at = Column(String, nullable=False, default=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
 
     lecture = relationship("Lecture", back_populates="notes")

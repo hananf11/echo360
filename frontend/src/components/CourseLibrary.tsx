@@ -383,8 +383,8 @@ export default function CourseLibrary() {
                         </button>
 
                         {course.last_synced_at && (
-                          <span className="ml-auto text-[10px] text-slate-600" title={`Synced ${new Date(course.last_synced_at).toLocaleString()}`}>
-                            Synced {new Date(course.last_synced_at).toLocaleDateString()}
+                          <span className="ml-auto text-[10px] text-slate-600" title={`Synced ${new Date(course.last_synced_at).toLocaleString('en-NZ', { timeZone: 'Pacific/Auckland' })}`}>
+                            Synced {new Date(course.last_synced_at).toLocaleDateString('en-NZ', { timeZone: 'Pacific/Auckland' })}
                           </span>
                         )}
                         {!course.last_synced_at && (

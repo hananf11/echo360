@@ -17,3 +17,4 @@ sqlalchemy>=2.0
 alembic
 m3u8
 litellm
+websockets>=12.0

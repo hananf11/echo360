@@ -59,12 +59,23 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
     with get_db() as session:
         lec = session.get(Lecture, lecture_id)
         if not lec:
+            _LOGGER.warning("transcribe_lecture[%d]: lecture not found", lecture_id)
             return
         if lec.audio_status != "done" or not lec.audio_path:
+            _LOGGER.warning(
+                "transcribe_lecture[%d]: audio not ready (status=%s path=%s)",
+                lecture_id, lec.audio_status, lec.audio_path,
+            )
             return
         course_id = lec.course_id
         audio_path = lec.audio_path
         duration_seconds = lec.duration_seconds
+
+    file_size_mb = os.path.getsize(audio_path) / 1024 / 1024 if os.path.exists(audio_path) else 0
+    _LOGGER.info(
+        "transcribe_lecture[%d]: model=%s file=%s (%.1f MB, %ss)",
+        lecture_id, model_name, os.path.basename(audio_path), file_size_mb, duration_seconds,
+    )
 
     def _bcast(data: dict):
         jobs.broadcast({"type": "lecture_update", "lecture_id": lecture_id, "course_id": course_id, **data})
@@ -78,6 +89,8 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
         jobs.broadcast({"type": "transcription_start", "lecture_id": lecture_id})
         _bcast({"status": "transcribing"})
 
+        import time as _time
+        t0 = _time.monotonic()
         if model_name == "cloud":
             segments = await _transcribe_cloud(audio_path, _bcast)
         elif model_name.startswith("groq"):
@@ -86,6 +99,12 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
             segments = await _transcribe_modal(audio_path, _bcast)
         else:
             segments = await _transcribe_local(audio_path, model_name)
+
+        elapsed = _time.monotonic() - t0
+        _LOGGER.info(
+            "transcribe_lecture[%d]: done — %d segments in %.1fs",
+            lecture_id, len(segments), elapsed,
+        )
 
         with get_db() as session:
             session.add(Transcript(
@@ -102,6 +121,9 @@ async def transcribe_lecture(lecture_id: int, model_name: str = "groq") -> None:
 
         from app.outline_sync import sync_lecture_to_outline
         sync_lecture_to_outline(lecture_id)
+
+        from app.github_sync import sync_lecture_to_github
+        sync_lecture_to_github(lecture_id)
 
     except Exception as e:
         _LOGGER.exception("Transcription failed for lecture %d", lecture_id)
@@ -174,10 +196,15 @@ async def _transcribe_groq(audio_path: str, model_name: str, _bcast) -> list[dic
 
     file_size = os.path.getsize(audio_path)
     needs_chunking = file_size > GROQ_MAX_FILE_SIZE
+    _LOGGER.info(
+        "_transcribe_groq: model=%s file=%.1f MB needs_chunking=%s",
+        groq_model, file_size / 1024 / 1024, needs_chunking,
+    )
 
     if needs_chunking:
         _LOGGER.info("Audio file is %.1f MB, splitting into chunks for Groq API", file_size / 1024 / 1024)
         chunks = await _split_audio(audio_path)
+        _LOGGER.info("_transcribe_groq: split into %d chunks", len(chunks))
         try:
             return await _transcribe_groq_chunked(chunks, groq_model, api_key)
         finally:
@@ -197,6 +224,7 @@ async def _transcribe_groq(audio_path: str, model_name: str, _bcast) -> list[dic
 )
 async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str) -> list[dict]:
     """Transcribe a single file via Groq API with retry for transient errors."""
+    _LOGGER.info("_transcribe_groq_single: posting %s to Groq (%s)", os.path.basename(audio_path), groq_model)
     async with httpx.AsyncClient(timeout=httpx.Timeout(300.0)) as client:
         with open(audio_path, "rb") as f:
             resp = await client.post(
@@ -211,9 +239,12 @@ async def _transcribe_groq_single(audio_path: str, groq_model: str, api_key: str
             )
 
     if resp.status_code == 200:
-        return _parse_segments(resp.json())
+        segs = _parse_segments(resp.json())
+        _LOGGER.info("_transcribe_groq_single: OK — %d segments", len(segs))
+        return segs
     if resp.status_code == 429 or resp.status_code >= 500:
         retry_after = float(resp.headers["retry-after"]) if resp.headers.get("retry-after") else None
+        _LOGGER.warning("_transcribe_groq_single: HTTP %d retry-after=%s", resp.status_code, retry_after)
         raise _RetryableAPIError(resp.status_code, retry_after, resp.text[:500])
     raise RuntimeError(f"Groq API error ({resp.status_code}): {resp.text[:500]}")
 
@@ -304,6 +335,7 @@ async def _transcribe_cloud(audio_path: str, _bcast) -> list[dict]:
 
 async def _transcribe_local(audio_path: str, model_name: str) -> list[dict]:
     """Transcribe locally via faster-whisper subprocess."""
+    _LOGGER.info("_transcribe_local: model=%s file=%s", model_name, os.path.basename(audio_path))
     proc = await asyncio.create_subprocess_exec(
         sys.executable, "-m", "app.transcribe_worker",
         audio_path, model_name,
@@ -314,6 +346,9 @@ async def _transcribe_local(audio_path: str, model_name: str) -> list[dict]:
     stdout_data, stderr_data = await proc.communicate()
 
     if proc.returncode != 0:
+        _LOGGER.error("_transcribe_local: subprocess failed rc=%d stderr=%s", proc.returncode, stderr_data.decode()[:500])
         raise RuntimeError(f"Transcription subprocess failed (rc={proc.returncode}): {stderr_data.decode()[:500]}")
 
-    return json.loads(stdout_data.decode())
+    segs = json.loads(stdout_data.decode())
+    _LOGGER.info("_transcribe_local: done — %d segments", len(segs))
+    return segs

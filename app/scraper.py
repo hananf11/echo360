@@ -41,25 +41,38 @@ def _build_driver():
     if os.environ.get("CHROMEDRIVER_PATH"):
         service_kwargs["executable_path"] = os.environ["CHROMEDRIVER_PATH"]
 
-    return webdriver.Chrome(service=Service(**service_kwargs), options=opts)
+    _LOGGER.debug("Building Chrome driver (headless=new, log=%s)", log_path)
+    driver = webdriver.Chrome(service=Service(**service_kwargs), options=opts)
+    _LOGGER.debug("Chrome driver ready")
+    return driver
 
 
 def _load_session(driver, hostname: str) -> bool:
     """Restore saved cookies and warm up the Echo360 session."""
     if not os.path.exists(_COOKIES_FILE):
+        _LOGGER.warning("_load_session: no cookies file found at %s", _COOKIES_FILE)
         return False
     driver.get(hostname)
     with open(_COOKIES_FILE) as f:
         cookies = json.load(f)
+    _LOGGER.debug("_load_session: loading %d cookies for %s", len(cookies), hostname)
+    loaded, skipped = 0, 0
     for cookie in cookies:
         cookie.pop("sameSite", None)
         try:
             driver.add_cookie(cookie)
-        except Exception:
-            pass
+            loaded += 1
+        except Exception as exc:
+            _LOGGER.debug("_load_session: skipped cookie %r — %s", cookie.get("name"), exc)
+            skipped += 1
     driver.refresh()
     time.sleep(2)
-    return any("ECHO_JWT" in c["name"] for c in driver.get_cookies())
+    has_jwt = any("ECHO_JWT" in c["name"] for c in driver.get_cookies())
+    _LOGGER.info(
+        "_load_session: %d cookies loaded, %d skipped — ECHO_JWT present: %s",
+        loaded, skipped, has_jwt,
+    )
+    return has_jwt
 
 
 def _extract_hostname(url: str) -> str:
@@ -87,9 +100,11 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
     try:
         driver = _build_driver()
         if not _load_session(driver, hostname):
+            from app import jobs
+            jobs.broadcast({"type": "session_expired"})
             raise RuntimeError(
-                "No saved session found. Run the CLI first to log in:\n"
-                "  python echo360.py URL --chrome --persistent-session"
+                "No saved session found. Use the Re-authenticate button in the web UI, "
+                "or run: python echo360.py URL --chrome --persistent-session"
             )
 
         driver.get(courses_page_url)
@@ -136,7 +151,9 @@ def discover_course_urls(courses_page_url: str) -> list[str]:
             pass
 
         if "/login" in current_url or "sign-in" in current_url.lower():
-            raise RuntimeError("Session expired — please re-authenticate via the CLI.")
+            from app import jobs
+            jobs.broadcast({"type": "session_expired"})
+            raise RuntimeError("Session expired — use the Re-authenticate button in the web UI.")
 
         seen: set[str] = set()
         urls: list[str] = []
@@ -179,21 +196,26 @@ def sync_course(course_id: int, course_url: str) -> None:
     _bcast({"type": "sync_start"})
     hostname = _extract_hostname(course_url)
     section_id = _extract_section_id(course_url)
+    _LOGGER.info("sync_course[%d]: hostname=%s section_id=%s", course_id, hostname, section_id)
 
     driver = None
     try:
         driver = _build_driver()
         if not _load_session(driver, hostname):
+            jobs.broadcast({"type": "session_expired"})
             raise RuntimeError(
-                "No saved session found. Run the CLI first to log in:\n"
-                "  python echo360.py URL --chrome --persistent-session"
+                "No saved session found. Use the Re-authenticate button in the web UI, "
+                "or run: python echo360.py URL --chrome --persistent-session"
             )
 
+        _LOGGER.info("sync_course[%d]: session OK, fetching course data", course_id)
         course = EchoCloudCourse(section_id, hostname, alternative_feeds=False)
         course.set_driver(driver)
 
         course_data = course._get_course_data()
         course_name = course.course_name
+        _LOGGER.info("sync_course[%d]: course_name=%r, raw data keys=%s",
+                     course_id, course_name, list(course_data.keys()) if isinstance(course_data, dict) else type(course_data).__name__)
 
         with get_db() as session:
             c = session.get(Course, course_id)
@@ -202,6 +224,7 @@ def sync_course(course_id: int, course_url: str) -> None:
                 c.last_synced_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
 
         lectures = _parse_lectures(course_data)
+        _LOGGER.info("sync_course[%d]: parsed %d lectures", course_id, len(lectures))
 
         with get_db() as session:
             for lec in lectures:
@@ -245,10 +268,11 @@ def sync_course(course_id: int, course_url: str) -> None:
                 except (json.JSONDecodeError, TypeError):
                     pass
 
+        _LOGGER.info("sync_course[%d]: done — %d lectures upserted", course_id, len(lectures))
         _bcast({"type": "sync_done", "course_name": course_name, "count": len(lectures)})
 
     except Exception as e:
-        _LOGGER.exception("sync_course failed for course %d", course_id)
+        _LOGGER.exception("sync_course[%d]: failed", course_id)
         _bcast({"type": "sync_error", "error": str(e)})
         raise
     finally:
@@ -289,8 +313,16 @@ def _parse_single(v: dict, group_prefix: str = "") -> dict | None:
         date = "1970-01-01"
         if v["lesson"].get("startTimeUTC"):
             date = v["lesson"]["startTimeUTC"][:10]
-        elif lesson.get("createdAt"):
-            date = lesson["createdAt"][:10]
+        else:
+            # No scheduled time — try to recover date from captureOccurrenceId
+            # e.g. "uuid_20250217T0100" → "2025-02-17"
+            medias = v["lesson"].get("medias") or []
+            cap_id = medias[0].get("captureOccurrenceId", "") if medias else ""
+            m = re.search(r"_(\d{4})(\d{2})(\d{2})T", cap_id)
+            if m:
+                date = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
+            elif lesson.get("createdAt"):
+                date = lesson["createdAt"][:10]
 
         duration_seconds = _compute_duration(v)
 
@@ -342,18 +374,28 @@ def _extract_stream_url(video_json: dict, hostname: str):
         primary = video_json["lesson"]["video"]["media"]["media"]["current"]["primaryFiles"]
         urls = [obj["s3Url"] for obj in primary if obj.get("s3Url")]
         if urls:
-            return next(reversed(urls))
+            url = next(reversed(urls))
+            _LOGGER.debug("_extract_stream_url: method=s3_primary url=%s", url[:80])
+            return url
     except (KeyError, TypeError):
         pass
 
     # Method 2: M3U8 manifests
     try:
         lesson = video_json["lesson"]
-        if not (lesson.get("hasVideo") or lesson.get("hasContent") or lesson.get("medias")):
+        has_video = lesson.get("hasVideo")
+        has_content = lesson.get("hasContent")
+        has_media = bool(lesson.get("medias"))
+        if not (has_video or has_content or has_media):
+            _LOGGER.debug(
+                "_extract_stream_url: no media flags (hasVideo=%s hasContent=%s medias=%s)",
+                has_video, has_content, has_media,
+            )
             return None
         manifests = video_json["lesson"]["video"]["media"]["media"]["versions"][0]["manifests"]
         m3u8urls = [m["uri"] for m in manifests if m.get("uri")]
         if not m3u8urls:
+            _LOGGER.debug("_extract_stream_url: manifests key exists but no URIs")
             return None
         from urllib.parse import urlparse
         netloc = urlparse(hostname).netloc
@@ -361,10 +403,12 @@ def _extract_stream_url(video_json: dict, hostname: str):
         for u in m3u8urls:
             p = urlparse(u)
             fixed.append(f"{p.scheme}://content.{netloc}{p.path}")
+        _LOGGER.debug("_extract_stream_url: method=m3u8 count=%d", len(fixed))
         return fixed
-    except (KeyError, TypeError, IndexError):
-        pass
+    except (KeyError, TypeError, IndexError) as exc:
+        _LOGGER.debug("_extract_stream_url: method=m3u8 failed (%s)", exc)
 
+    _LOGGER.debug("_extract_stream_url: no URL found")
     return None
 
 

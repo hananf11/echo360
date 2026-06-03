@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
 import type { SSEMessage } from '../types'
 
-export function useSSE(onMessage: (msg: SSEMessage) => void) {
+export function useSSE(onMessage: (msg: SSEMessage) => void, onReconnect?: () => void) {
   useEffect(() => {
     const es = new EventSource('/api/sse')
     es.onmessage = (e) => {
@@ -12,8 +12,9 @@ export function useSSE(onMessage: (msg: SSEMessage) => void) {
       }
     }
     es.onerror = () => {
-      // SSE will auto-reconnect; nothing to do
+      // SSE will auto-reconnect; re-fetch state in case we missed messages
+      if (onReconnect) onReconnect()
     }
     return () => es.close()
-  }, [onMessage])
+  }, [onMessage, onReconnect])
 }

@@ -167,7 +167,7 @@ def list_documents(collection_id: str, *, parent_document_id: str | None = None)
 
     When parent_document_id is None, returns top-level documents only.
     """
-    payload: dict = {"collectionId": collection_id}
+    payload: dict = {"collectionId": collection_id, "limit": 100}
     if parent_document_id:
         payload["parentDocumentId"] = parent_document_id
     with httpx.Client(timeout=30) as client:

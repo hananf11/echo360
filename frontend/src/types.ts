@@ -46,6 +46,7 @@ export interface Note {
   model: string
   content_md: string
   frame_timestamps: { time: number; reason: string }[]
+  action_items: { task: string; due_date: string | null }[]
   created_at: string
 }
 

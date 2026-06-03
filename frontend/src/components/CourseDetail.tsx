@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { Link } from '@tanstack/react-router'
-import { ArrowLeft, Download, RefreshCw, Mic, Sparkles, Wand2, Check, X, CalendarClock, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Download, RefreshCw, Mic, Sparkles, Wand2, Check, X, CalendarClock, ExternalLink, ChevronDown } from 'lucide-react'
 import { getCourse, getLectures, fixTitles, updateCourseDisplayName, syncCourse, bulkDownload, bulkRedownload, bulkTranscribe, bulkGenerateNotes } from '../api'
 import type { Course, Lecture, SSEMessage } from '../types'
 import { useSSE } from '../hooks/useSSE'
@@ -29,10 +29,11 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
   const [syncing, setSyncing] = useState(false)
   const [showFuture, setShowFuture] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [collapsedYears, setCollapsedYears] = useState<Set<string>>(new Set())
 
   const load = useCallback(() => {
     Promise.all([getCourse(courseId), getLectures(courseId)])
-      .then(([c, ls]) => { setCourse(c); setLectures(ls); if (c.syncing) setSyncing(true) })
+      .then(([c, ls]) => { setCourse(c); setLectures(ls); setSyncing(!!c.syncing) })
       .finally(() => setLoading(false))
   }, [courseId])
 
@@ -169,7 +170,7 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
     }
   }, [courseId, load])
 
-  useSSE(handleSSE)
+  useSSE(handleSSE, load)
 
   const handleFixTitles = async () => {
     setFixingTitles(true)
@@ -325,7 +326,7 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
               )}
               {course?.last_synced_at && (
                 <p className="text-xs text-slate-600 mt-1">
-                  Last synced {new Date(course.last_synced_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                  Last synced {new Date(course.last_synced_at).toLocaleDateString('en-NZ', { timeZone: 'Pacific/Auckland', year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
                 </p>
               )}
 
@@ -529,36 +530,73 @@ export default function CourseDetail({ courseId }: { courseId: number }) {
             <div className="flex flex-col gap-6">
               {(() => {
                 const sorted = [...visibleLectures].sort((a, b) => a.date.localeCompare(b.date))
-                return (
-                  <div className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
-                    <div className="px-5 py-2.5 border-b border-slate-700/50">
-                      <div className="flex items-center gap-3">
-                        <input
-                          type="checkbox"
-                          checked={allVisibleSelected}
-                          onChange={toggleSelectAll}
-                          className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
-                        />
-                        <span className="text-xs text-slate-500">{sorted.length} lecture{sorted.length !== 1 ? 's' : ''}</span>
-                      </div>
-                    </div>
-                    <table className="w-full">
-                      <tbody>
-                        {sorted.map((lecture, i) => (
-                          <LectureRow
-                            key={lecture.id}
-                            lecture={lecture}
-                            hostname={course?.hostname ?? ''}
-                            isLast={i === sorted.length - 1}
-                            selected={selectedIds.has(lecture.id)}
-                            onToggle={toggleSelection}
-                            progress={progressMap[lecture.id]}
+                const years = [...new Set(sorted.map(l => l.date.slice(0, 4)))]
+                const groups = years.length > 1
+                  ? years.map(y => ({ year: y, lectures: sorted.filter(l => l.date.startsWith(y)) }))
+                  : [{ year: null, lectures: sorted }]
+                return groups.map(({ year, lectures: groupLectures }) => {
+                  const collapsed = year ? collapsedYears.has(year) : false
+                  const toggleCollapse = () => {
+                    if (!year) return
+                    setCollapsedYears(prev => {
+                      const next = new Set(prev)
+                      next.has(year) ? next.delete(year) : next.add(year)
+                      return next
+                    })
+                  }
+                  return (
+                    <div key={year ?? 'all'} className="bg-slate-800/70 rounded-xl border border-slate-700/50 overflow-hidden">
+                      <div
+                        className={`px-5 py-2.5 ${!collapsed ? 'border-b border-slate-700/50' : ''} ${year ? 'cursor-pointer hover:bg-slate-700/30 transition-colors' : ''}`}
+                        onClick={year ? toggleCollapse : undefined}
+                      >
+                        <div className="flex items-center gap-3">
+                          <input
+                            type="checkbox"
+                            checked={groupLectures.length > 0 && groupLectures.every(l => selectedIds.has(l.id))}
+                            onClick={e => e.stopPropagation()}
+                            onChange={() => {
+                              const allSelected = groupLectures.every(l => selectedIds.has(l.id))
+                              setSelectedIds(prev => {
+                                const next = new Set(prev)
+                                groupLectures.forEach(l => allSelected ? next.delete(l.id) : next.add(l.id))
+                                return next
+                              })
+                            }}
+                            className="w-3.5 h-3.5 rounded border-slate-600 bg-slate-800 text-indigo-500 focus:ring-indigo-500 focus:ring-offset-0 cursor-pointer"
                           />
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )
+                          {year && (
+                            <>
+                              <span className="text-xs font-semibold text-slate-300">{year}</span>
+                              <ChevronDown
+                                size={13}
+                                className={`text-slate-500 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+                              />
+                            </>
+                          )}
+                          <span className="text-xs text-slate-500">{groupLectures.length} lecture{groupLectures.length !== 1 ? 's' : ''}</span>
+                        </div>
+                      </div>
+                      {!collapsed && (
+                        <table className="w-full">
+                          <tbody>
+                            {groupLectures.map((lecture, i) => (
+                              <LectureRow
+                                key={lecture.id}
+                                lecture={lecture}
+                                hostname={course?.hostname ?? ''}
+                                isLast={i === groupLectures.length - 1}
+                                selected={selectedIds.has(lecture.id)}
+                                onToggle={toggleSelection}
+                                progress={progressMap[lecture.id]}
+                              />
+                            ))}
+                          </tbody>
+                        </table>
+                      )}
+                    </div>
+                  )
+                })
               })()}
 
               {/* Future lectures toggle */}

@@ -7,9 +7,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 # Configure root logger so app.* modules output to stderr (visible in docker logs)
-logging.basicConfig(level=logging.INFO, format="%(levelname)s  [%(name)s] %(message)s")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s  [%(name)s] %(message)s", datefmt="%H:%M:%S")
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -19,14 +19,16 @@ from sse_starlette.sse import EventSourceResponse
 
 from app.database import get_db, init_db
 from app.models import Course, Lecture, Note, Transcript
-from app import jobs, scraper
+from app import browser_stream, jobs, scraper
 
 STATIC_DIR = Path(__file__).parent / "static"
 AUDIO_DIR = os.environ.get("ECHO360_AUDIO_DIR", os.path.expanduser("~/echo360-library"))
+_LOGGER = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _LOGGER.info("Starting up — AUDIO_DIR=%s", AUDIO_DIR)
     jobs.set_loop(asyncio.get_event_loop())
     init_db()
     await jobs.start_workers()
@@ -34,7 +36,9 @@ async def lifespan(app: FastAPI):
     _recover_downloaded()
     # Remove leftover raw files from previous runs
     _cleanup_raw_files()
+    _LOGGER.info("Startup complete")
     yield
+    _LOGGER.info("Shutting down")
     jobs.shutdown()
 
 
@@ -48,6 +52,8 @@ def _recover_downloaded():
             .all()
         )
         rows = [(lec.id, lec.raw_path, lec.date, lec.title, lec.course.name) for lec in lectures]
+    if rows:
+        _LOGGER.info("_recover_downloaded: found %d lecture(s) stuck in 'downloaded'", len(rows))
     for lid, raw_path, date, title, course_name in rows:
         if raw_path and os.path.exists(raw_path):
             course_dir = os.path.join(
@@ -59,8 +65,6 @@ def _recover_downloaded():
 
 def _cleanup_raw_files():
     """Remove leftover raw files (.mp4, .m4s, .ts) where .opus conversion already exists."""
-    import logging
-    logger = logging.getLogger(__name__)
     removed, freed = 0, 0
     if not os.path.isdir(AUDIO_DIR):
         return
@@ -80,7 +84,7 @@ def _cleanup_raw_files():
                     except OSError:
                         pass
     if removed:
-        logger.info("Cleanup: removed %d leftover raw files, freed %.2f GB", removed, freed / (1024**3))
+        _LOGGER.info("_cleanup_raw_files: removed %d leftover raw files, freed %.2f GB", removed, freed / (1024**3))
     # Clear stale raw_path references in DB for completed lectures
     with get_db() as session:
         session.query(Lecture).filter(
@@ -136,7 +140,7 @@ def list_courses():
             session.query(
                 Course,
                 func.sum(is_current).label("lecture_count"),
-                func.min(func.substr(Lecture.date, 1, 4)).label("year"),
+                func.max(func.substr(Lecture.date, 1, 4)).label("year"),
                 func.sum(case((Lecture.audio_status.in_(("downloading", "downloaded", "converting")), 1), else_=0)).label("downloading_count"),
                 func.sum(case((Lecture.audio_status == "queued", 1), else_=0)).label("queued_count"),
                 func.sum(case(((Lecture.audio_status == "done") & (Lecture.date <= tomorrow), 1), else_=0)).label("downloaded_count"),
@@ -582,6 +586,7 @@ def get_notes(lecture_id: int):
         "model": note.model,
         "content_md": note.content_md,
         "frame_timestamps": json.loads(note.frame_timestamps) if note.frame_timestamps else [],
+        "action_items": json.loads(note.action_items) if note.action_items else [],
         "created_at": note.created_at,
     }
 
@@ -857,7 +862,7 @@ def get_pipeline_status():
             if not lectures:
                 continue
 
-            year = min((lec.date[:4] for lec in lectures if lec.date), default=None)
+            year = max((lec.date[:4] for lec in lectures if lec.date), default=None)
             audio_done = sum(1 for l in lectures if l.audio_status == "done")
             no_media = sum(1 for l in lectures if l.audio_status == "no_media")
             transcript_done = sum(1 for l in lectures if l.transcript_status == "done")
@@ -917,6 +922,27 @@ def get_storage():
 
 
 # ── Outline sync ─────────────────────────────────────────────────────────────
+
+
+@app.post("/api/lectures/{lecture_id}/outline-sync")
+def outline_sync_lecture(lecture_id: int):
+    """Sync a single lecture to Outline wiki."""
+    from app.outline import OUTLINE_API_KEY
+    if not OUTLINE_API_KEY:
+        raise HTTPException(400, "OUTLINE_API_KEY is not set")
+
+    with get_db() as session:
+        lec = session.get(Lecture, lecture_id)
+        if not lec:
+            raise HTTPException(404, "Lecture not found")
+
+    def _sync():
+        from app.outline_sync import sync_lecture_to_outline
+        sync_lecture_to_outline(lecture_id)
+        jobs.broadcast({"type": "outline_lecture_sync_done", "lecture_id": lecture_id})
+
+    jobs.submit(_sync)
+    return {"status": "queued", "lecture_id": lecture_id}
 
 
 @app.post("/api/outline/sync/{year}")
@@ -980,6 +1006,46 @@ def get_queue():
             .all()
         )
     return [row._asdict() for row in rows]
+
+
+# ── Session / re-auth ────────────────────────────────────────────────────────
+
+
+@app.get("/api/session/status")
+def session_status():
+    return browser_stream.check_session_status()
+
+
+@app.post("/api/session/refresh")
+def session_refresh():
+    """Try to silently refresh the Echo360 session using headless Chrome."""
+    success = browser_stream.try_silent_refresh()
+    if success:
+        jobs.broadcast({"type": "session_refreshed"})
+    return {"success": success}
+
+
+class LoginRequest(BaseModel):
+    url: str = "https://echo360.net.au"
+
+
+@app.websocket("/api/browser-stream")
+async def browser_stream_ws(websocket: WebSocket):
+    await websocket.accept()
+    try:
+        # Read the initial message with the login URL
+        init_msg = await asyncio.wait_for(websocket.receive_text(), timeout=5)
+        data = json.loads(init_msg)
+        login_url = data.get("url", "https://echo360.net.au")
+    except Exception:
+        login_url = "https://echo360.net.au"
+
+    try:
+        await browser_stream.run_browser_stream(websocket, login_url)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        browser_stream._kill_chrome(browser_stream._active_process)
 
 
 # ── SSE ───────────────────────────────────────────────────────────────────────

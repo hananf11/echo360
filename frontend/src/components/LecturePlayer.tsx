@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { getTranscript, getNotes, extractFrames, getFrames } from '../api'
 import type { Transcript, Note } from '../types'
 import type { FrameInfo } from '../api'
-import { Play, Pause, FileText, BookOpen, Clock, Image as ImageIcon } from 'lucide-react'
+import { Play, Pause, FileText, BookOpen, Clock, Image as ImageIcon, CheckSquare } from 'lucide-react'
 
 interface Props {
   lectureId: number
@@ -289,8 +291,33 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
                           prose-strong:text-white prose-strong:font-semibold
                           prose-code:text-indigo-300 prose-code:bg-slate-800/80 prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs
                           prose-pre:bg-slate-800/80 prose-pre:border prose-pre:border-slate-700/50 prose-pre:rounded-lg"
-                        dangerouslySetInnerHTML={{ __html: renderMarkdown(notes.content_md) }}
+                        children={<ReactMarkdown remarkPlugins={[remarkGfm]}>{notes.content_md}</ReactMarkdown>}
                       />
+
+                      {/* Action items */}
+                      {notes.action_items.length > 0 && (
+                        <div className="px-5 pb-4 border-t border-slate-700/40 pt-4 mx-1">
+                          <p className="flex items-center gap-1.5 text-[11px] font-medium text-slate-500 uppercase tracking-wider mb-3">
+                            <CheckSquare size={12} />
+                            Action Items
+                          </p>
+                          <ul className="space-y-1.5">
+                            {notes.action_items.map((item, i) => (
+                              <li key={i} className="flex items-start gap-2.5 text-sm text-slate-300">
+                                <span className="mt-0.5 w-4 h-4 shrink-0 rounded border border-slate-600 bg-slate-800/50" />
+                                <span className="flex-1">
+                                  {item.task}
+                                  {item.due_date && (
+                                    <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/20">
+                                      {item.due_date}
+                                    </span>
+                                  )}
+                                </span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
 
                       {/* Frame timestamps */}
                       {notes.frame_timestamps.length > 0 && (
@@ -355,49 +382,3 @@ export default function LecturePlayer({ lectureId, hasTranscript, hasNotes, fram
   )
 }
 
-/** Minimal markdown → HTML renderer for notes content. */
-function renderMarkdown(md: string): string {
-  let html = md
-    // Escape HTML
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-
-  // Code blocks (``` ... ```)
-  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, (_m, _lang, code) =>
-    `<pre><code>${code.trim()}</code></pre>`
-  )
-
-  // Inline code
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
-
-  // Headers
-  html = html.replace(/^#### (.+)$/gm, '<h4>$1</h4>')
-  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>')
-  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>')
-  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>')
-
-  // Bold and italic
-  html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
-  html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-  html = html.replace(/\*(.+?)\*/g, '<em>$1</em>')
-
-  // Unordered lists (- item)
-  html = html.replace(/^(\s*)- (.+)$/gm, (_m, indent, text) => {
-    const level = Math.floor(indent.length / 2)
-    return `<li style="margin-left:${level * 1.5}em">${text}</li>`
-  })
-  // Wrap consecutive <li> in <ul>
-  html = html.replace(/((?:<li[^>]*>.*<\/li>\n?)+)/g, '<ul>$1</ul>')
-
-  // Paragraphs: wrap non-tag lines separated by blank lines
-  html = html.replace(/\n{2,}/g, '\n\n')
-  html = html.split('\n\n').map(block => {
-    block = block.trim()
-    if (!block) return ''
-    if (block.startsWith('<')) return block
-    return `<p>${block.replace(/\n/g, '<br>')}</p>`
-  }).join('\n')
-
-  return html
-}

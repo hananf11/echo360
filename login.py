@@ -41,8 +41,7 @@ def main():
                 with open(COOKIES_FILE, "w") as f:
                     json.dump(cookies, f)
                 print(f"\nSession saved to {COOKIES_FILE}")
-                print("Restart the Docker container to pick up the new session:")
-                print("  docker compose restart")
+                print("The web app will use the new session automatically on the next request.")
                 break
 
             time.sleep(2)
